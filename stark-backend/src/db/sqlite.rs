@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use uuid::Uuid;
 
-use crate::models::Session;
+use crate::models::{ApiKey, Session};
 
 pub struct Database {
     conn: Mutex<Connection>,
@@ -29,6 +29,8 @@ impl Database {
 
     fn init(&self) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
+
+        // Sessions table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,9 +40,23 @@ impl Database {
             )",
             [],
         )?;
+
+        // External API keys table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS external_api_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                service_name TEXT UNIQUE NOT NULL,
+                api_key TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
         Ok(())
     }
 
+    // Session methods
     pub fn create_session(&self) -> SqliteResult<Session> {
         let conn = self.conn.lock().unwrap();
         let token = Uuid::new_v4().to_string();
@@ -98,6 +114,99 @@ impl Database {
     pub fn delete_session(&self, token: &str) -> SqliteResult<bool> {
         let conn = self.conn.lock().unwrap();
         let rows_affected = conn.execute("DELETE FROM sessions WHERE token = ?1", [token])?;
+        Ok(rows_affected > 0)
+    }
+
+    // API Key methods
+    pub fn get_api_key(&self, service_name: &str) -> SqliteResult<Option<ApiKey>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, service_name, api_key, created_at, updated_at FROM external_api_keys WHERE service_name = ?1",
+        )?;
+
+        let api_key = stmt
+            .query_row([service_name], |row| {
+                let created_at_str: String = row.get(3)?;
+                let updated_at_str: String = row.get(4)?;
+
+                Ok(ApiKey {
+                    id: row.get(0)?,
+                    service_name: row.get(1)?,
+                    api_key: row.get(2)?,
+                    created_at: DateTime::parse_from_rfc3339(&created_at_str)
+                        .unwrap()
+                        .with_timezone(&Utc),
+                    updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
+                        .unwrap()
+                        .with_timezone(&Utc),
+                })
+            })
+            .ok();
+
+        Ok(api_key)
+    }
+
+    pub fn list_api_keys(&self) -> SqliteResult<Vec<ApiKey>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, service_name, api_key, created_at, updated_at FROM external_api_keys ORDER BY service_name",
+        )?;
+
+        let api_keys = stmt
+            .query_map([], |row| {
+                let created_at_str: String = row.get(3)?;
+                let updated_at_str: String = row.get(4)?;
+
+                Ok(ApiKey {
+                    id: row.get(0)?,
+                    service_name: row.get(1)?,
+                    api_key: row.get(2)?,
+                    created_at: DateTime::parse_from_rfc3339(&created_at_str)
+                        .unwrap()
+                        .with_timezone(&Utc),
+                    updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
+                        .unwrap()
+                        .with_timezone(&Utc),
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(api_keys)
+    }
+
+    pub fn upsert_api_key(&self, service_name: &str, api_key: &str) -> SqliteResult<ApiKey> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+
+        // Try to update first
+        let rows_affected = conn.execute(
+            "UPDATE external_api_keys SET api_key = ?1, updated_at = ?2 WHERE service_name = ?3",
+            [api_key, &now, service_name],
+        )?;
+
+        if rows_affected == 0 {
+            // Insert new
+            conn.execute(
+                "INSERT INTO external_api_keys (service_name, api_key, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
+                [service_name, api_key, &now, &now],
+            )?;
+        }
+
+        drop(conn);
+
+        // Return the upserted key
+        self.get_api_key(service_name).map(|opt| opt.unwrap())
+    }
+
+    pub fn delete_api_key(&self, service_name: &str) -> SqliteResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows_affected = conn.execute(
+            "DELETE FROM external_api_keys WHERE service_name = ?1",
+            [service_name],
+        )?;
         Ok(rows_affected > 0)
     }
 }

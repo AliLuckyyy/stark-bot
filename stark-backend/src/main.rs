@@ -4,6 +4,7 @@ use actix_web::{middleware::Logger, web, App, HttpServer};
 use dotenv::dotenv;
 use std::sync::Arc;
 
+mod ai;
 mod config;
 mod controllers;
 mod db;
@@ -49,6 +50,8 @@ async fn main() -> std::io::Result<()> {
             .configure(controllers::health::config)
             .configure(controllers::auth::config)
             .configure(controllers::dashboard::config)
+            .configure(controllers::chat::config)
+            .configure(controllers::api_keys::config)
             .service(Files::new("/", "./stark-frontend").index_file("index.html"))
     })
     .bind(("0.0.0.0", port))?

@@ -41,12 +41,12 @@ async function handleLogin(event) {
     const errorMessage = document.getElementById('error-message');
 
     // Reset error state
-    errorMessage.style.display = 'none';
+    errorMessage.classList.add('hidden');
 
     // Show loading state
     loginBtn.disabled = true;
-    btnText.style.display = 'none';
-    btnLoading.style.display = 'inline';
+    btnText.classList.add('hidden');
+    btnLoading.classList.remove('hidden');
 
     try {
         const response = await fetch('/api/auth/login', {
@@ -71,13 +71,13 @@ async function handleLogin(event) {
     } finally {
         // Reset button state
         loginBtn.disabled = false;
-        btnText.style.display = 'inline';
-        btnLoading.style.display = 'none';
+        btnText.classList.remove('hidden');
+        btnLoading.classList.add('hidden');
     }
 }
 
 function showError(message) {
     const errorMessage = document.getElementById('error-message');
     errorMessage.textContent = message;
-    errorMessage.style.display = 'block';
+    errorMessage.classList.remove('hidden');
 }

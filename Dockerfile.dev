@@ -1,0 +1,19 @@
+# Development Dockerfile with hot reloading
+FROM rust:1.88-slim-bookworm
+
+WORKDIR /app
+
+# Install build dependencies and cargo-watch for hot reloading
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && cargo install cargo-watch
+
+# Expose port
+EXPOSE 8080
+
+# Run with cargo-watch for hot reloading
+# -w watches specified directories for changes
+# -x runs the specified cargo command
+CMD ["cargo", "watch", "-w", "stark-backend/src", "-w", "Cargo.toml", "-x", "run -p stark-backend"]

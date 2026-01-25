@@ -1,12 +1,19 @@
 # StarkBot
 
-A Rust-based bot with an Actix webserver, frontend login, and SQLite session storage.
+A cloud-deployable agentic assistant built with Rust and Actix. StarkBot acts as an intelligent automation hub that can interface with messaging platforms (WhatsApp, Slack), email services (Gmail), and more. Deploy it to the cloud and let it handle conversations, automate workflows, and integrate with your favorite services.
+
+**Key Features:**
+- Multi-platform messaging integration (WhatsApp, Slack, Gmail, and more)
+- Agentic AI capabilities for intelligent conversation handling
+- Secure session management with SQLite storage
+- Easy cloud deployment (DigitalOcean, AWS, etc.)
+- Hot-reload development environment
 
 ## Local Development
 
 ### Prerequisites
 
-- Rust 1.75+ (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
+- Rust 1.88+ (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
 - SQLite3 (usually pre-installed on Linux)
 
 ### Generate a Secret Key
@@ -22,20 +29,44 @@ head -c 32 /dev/urandom | base64
 cat /proc/sys/kernel/random/uuid
 ```
 
-### Run Locally
+### Environment Setup
+
+Both local development and Docker configurations read from a `.env` file. Set this up once and all commands will use it automatically.
 
 ```bash
 # Copy environment template
 cp .env.template .env
 
-# Edit .env and set your SECRET_KEY
+# Generate and set your SECRET_KEY
+SECRET_KEY=$(openssl rand -base64 32)
+sed -i "s/your-secret-key-here/$SECRET_KEY/" .env
+
+# Or manually edit .env
 nano .env
+```
 
-# Run the server
+Your `.env` file should contain:
+```
+SECRET_KEY=<your-generated-key>
+PORT=8080
+DATABASE_URL=./.db/stark.db
+RUST_LOG=info
+```
+
+### Configure AI (After First Login)
+
+API keys are managed through the web UI, not environment variables:
+
+1. Start the server and login
+2. Go to **API Keys** in the sidebar
+3. Add your Anthropic API key (get one from [console.anthropic.com](https://console.anthropic.com/))
+4. Your key is stored securely in the local SQLite database
+
+### Run Locally
+
+```bash
+# Run the server (reads from .env automatically via dotenv)
 cargo run -p stark-backend
-
-# Or run directly with environment variables
-SECRET_KEY=your-secret-key cargo run -p stark-backend
 ```
 
 The server starts at `http://localhost:8080`
@@ -54,56 +85,42 @@ curl -X POST http://localhost:8080/api/auth/login \
 
 ## Local Docker Testing
 
-### Build the Docker Image
+The production Docker setup reads configuration from your `.env` file automatically (no need to pass `-e` flags).
+
+### Run with Docker Compose (Recommended)
 
 ```bash
-docker build -t starkbot .
+# Start the container (reads from .env automatically)
+docker compose up --build
+
+# Or run in background
+docker compose up --build -d
+
+# View logs
+docker compose logs -f
+
+# Stop
+docker compose down
 ```
 
-### Run with Docker
+This includes persistent database storage in the `./data` directory.
+
+### Run with Docker Manually
+
+If you prefer manual Docker commands:
 
 ```bash
-# Generate a secret key
-SECRET_KEY=$(openssl rand -base64 32)
+# Build the image
+docker build -t starkbot .
 
-# Run the container
-docker run -p 8080:8080 -e SECRET_KEY="$SECRET_KEY" starkbot
+# Run with env file
+docker run -p 8080:8080 --env-file .env -v $(pwd)/data:/app/.db starkbot
 
 # Or run in detached mode
-docker run -d -p 8080:8080 -e SECRET_KEY="$SECRET_KEY" --name starkbot starkbot
+docker run -d -p 8080:8080 --env-file .env -v $(pwd)/data:/app/.db --name starkbot starkbot
 
- 
-
-```
-
-
-### Shut down docker when done
-
-```
-
-
-docker stop starkbot 
-
-docker rm starkbot  
-
-```
-
-
-
-
-
-### Run with Persistent Database
-
-```bash
-# Create the db directory
-mkdir -p ./.db
-
-# Run with volume mount for persistent SQLite
-docker run -p 8080:8080 \
-  -e SECRET_KEY="$SECRET_KEY" \
-  -e DATABASE_URL=/app/.db/stark.db \
-  -v $(pwd)/.db:/app/.db \
-  starkbot
+# Stop and remove
+docker stop starkbot && docker rm starkbot
 ```
 
 ### Test the Container
@@ -117,17 +134,44 @@ xdg-open http://localhost:8080  # Linux
 open http://localhost:8080      # macOS
 ```
 
-### Stop and Clean Up
+## Development with Hot Reload (Docker)
+
+For active development, use the dev Docker configuration which provides automatic hot reloading for both frontend and backend changes.
+
+### Start Development Environment
 
 ```bash
-# Stop running container
-docker stop starkbot
+# Start with hot reload (first run will take longer to build)
+docker compose -f docker-compose.dev.yml up --build
 
-# Remove container
-docker rm starkbot
+# Or run in background
+docker compose -f docker-compose.dev.yml up --build -d
 
-# Remove image (optional)
-docker rmi starkbot
+# View logs when running in background
+docker compose -f docker-compose.dev.yml logs -f
+```
+
+### How Hot Reload Works
+
+| Change Type | Behavior |
+|-------------|----------|
+| **Frontend** (HTML/CSS/JS in `stark-frontend/`) | Instant - files are volume-mounted directly |
+| **Backend** (Rust code in `stark-backend/src/`) | Automatic recompilation via `cargo-watch` |
+
+### Performance Notes
+
+- First build is slower (compiling all dependencies)
+- Subsequent rebuilds are fast thanks to cached dependencies
+- Named volumes (`cargo-target`, `cargo-registry`) persist between restarts
+
+### Stop Development Environment
+
+```bash
+# Stop containers
+docker compose -f docker-compose.dev.yml down
+
+# Stop and remove volumes (clean slate)
+docker compose -f docker-compose.dev.yml down -v
 ```
 
 ## Deploy to DigitalOcean App Platform
@@ -228,7 +272,10 @@ doctl apps create --spec .do/app.yaml
 ```
 starkbot/
 ├── Cargo.toml                 # Workspace manifest
-├── Dockerfile                 # Multi-stage build
+├── Dockerfile                 # Production multi-stage build
+├── Dockerfile.dev             # Development build with hot reload
+├── docker-compose.yml         # Production Docker Compose
+├── docker-compose.dev.yml     # Dev environment with volume mounts
 ├── stark-backend/             # Actix web server
 │   └── src/
 │       ├── main.rs            # Server entry point
@@ -239,6 +286,7 @@ starkbot/
 └── stark-frontend/            # Static frontend
     ├── index.html             # Login page
     ├── dashboard.html         # Protected dashboard
+    ├── agent-chat.html        # Agent conversation interface
     ├── css/styles.css
     └── js/
 ```

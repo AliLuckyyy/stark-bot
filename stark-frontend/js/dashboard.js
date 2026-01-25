@@ -47,8 +47,8 @@ async function loadDashboard(token) {
         document.getElementById('welcome-text').textContent = data.message;
         document.getElementById('timestamp').textContent = `Last updated: ${formatTimestamp(data.timestamp)}`;
 
-        loadingEl.style.display = 'none';
-        dashboardData.style.display = 'block';
+        loadingEl.classList.add('hidden');
+        dashboardData.classList.remove('hidden');
 
     } catch (error) {
         console.error('Dashboard error:', error);
@@ -77,9 +77,9 @@ function showError(message) {
     const loadingEl = document.getElementById('loading');
     const errorMessage = document.getElementById('error-message');
 
-    loadingEl.style.display = 'none';
+    loadingEl.classList.add('hidden');
     errorMessage.textContent = message;
-    errorMessage.style.display = 'block';
+    errorMessage.classList.remove('hidden');
 }
 
 function formatTimestamp(isoString) {

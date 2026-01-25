@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:1.83-slim-bullseye AS builder
+FROM rust:1.88-slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -13,7 +13,7 @@ COPY . .
 RUN cargo build --release -p stark-backend
 
 # Runtime stage
-FROM debian:bullseye-slim
+FROM debian:bookworm-slim
 
 WORKDIR /app
 
