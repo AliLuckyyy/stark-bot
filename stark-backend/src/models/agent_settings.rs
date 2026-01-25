@@ -48,7 +48,7 @@ impl AiProvider {
             AiProvider::Claude => "claude-sonnet-4-20250514",
             AiProvider::OpenAI => "gpt-4o",
             AiProvider::OpenAICompatible => "your-model-name",
-            AiProvider::Llama => "llama3.2",
+            AiProvider::Llama => "llama3.3",
         }
     }
 }

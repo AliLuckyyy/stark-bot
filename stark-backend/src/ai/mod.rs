@@ -4,7 +4,7 @@ pub mod openai;
 pub mod types;
 
 pub use claude::ClaudeClient;
-pub use llama::LlamaClient;
+pub use llama::{LlamaClient, LlamaMessage};
 pub use openai::OpenAIClient;
 pub use types::{
     AiResponse, ClaudeMessage as TypedClaudeMessage, ToolCall, ToolHistoryEntry, ToolResponse,
@@ -90,7 +90,7 @@ impl AiClient {
         }
     }
 
-    /// Generate response with tool support (Claude and OpenAI/OpenAI-compatible)
+    /// Generate response with tool support (Claude, OpenAI, and Llama 3.1+)
     pub async fn generate_with_tools(
         &self,
         messages: Vec<Message>,
@@ -112,17 +112,20 @@ impl AiClient {
                     .generate_with_tools(messages, tool_messages, tools)
                     .await
             }
-            // Llama falls back to text-only generation
             AiClient::Llama(client) => {
-                let text = client.generate_text(messages).await?;
-                Ok(AiResponse::text(text))
+                // Convert tool history to Llama/Ollama format
+                let tool_messages = Self::tool_history_to_llama(&tool_history);
+                client
+                    .generate_with_tools(messages, tool_messages, tools)
+                    .await
             }
         }
     }
 
     /// Check if the current provider supports tools
     pub fn supports_tools(&self) -> bool {
-        matches!(self, AiClient::Claude(_) | AiClient::OpenAI(_))
+        // All providers now support tools
+        matches!(self, AiClient::Claude(_) | AiClient::OpenAI(_) | AiClient::Llama(_))
     }
 
     /// Build a tool history entry from tool calls and responses
@@ -180,6 +183,17 @@ impl AiClient {
             let openai_messages =
                 OpenAIClient::build_tool_result_messages(&entry.tool_calls, &entry.tool_responses);
             messages.extend(openai_messages);
+        }
+        messages
+    }
+
+    /// Convert tool history to Llama/Ollama format
+    fn tool_history_to_llama(history: &[ToolHistoryEntry]) -> Vec<LlamaMessage> {
+        let mut messages = Vec::new();
+        for entry in history {
+            let llama_messages =
+                LlamaClient::build_tool_result_messages(&entry.tool_calls, &entry.tool_responses);
+            messages.extend(llama_messages);
         }
         messages
     }

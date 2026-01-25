@@ -35,14 +35,14 @@ pub struct OpenAIMessage {
     pub tool_call_id: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct OpenAITool {
     #[serde(rename = "type")]
     tool_type: String,
     function: OpenAIFunction,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct OpenAIFunction {
     name: String,
     description: String,
@@ -183,11 +183,21 @@ impl OpenAIClient {
             model: self.model.clone(),
             messages: api_messages,
             max_tokens: 4096,
-            tools: openai_tools,
+            tools: openai_tools.clone(),
             tool_choice: if tools.is_empty() { None } else { Some("auto".to_string()) },
         };
 
-        log::debug!("Sending request to OpenAI-compatible API: {}", self.endpoint);
+        // Debug: Log full request details
+        log::info!(
+            "[OPENAI] Sending request to {} with model {} and {} tools",
+            self.endpoint,
+            self.model,
+            openai_tools.as_ref().map(|t| t.len()).unwrap_or(0)
+        );
+        log::debug!(
+            "[OPENAI] Full request:\n{}",
+            serde_json::to_string_pretty(&request).unwrap_or_default()
+        );
 
         let response = self
             .client
@@ -211,15 +221,29 @@ impl OpenAIClient {
             ));
         }
 
-        let response_data: OpenAICompletionResponse = response
-            .json()
+        let response_text = response
+            .text()
             .await
-            .map_err(|e| format!("Failed to parse OpenAI response: {}", e))?;
+            .map_err(|e| format!("Failed to read OpenAI response: {}", e))?;
+
+        // Debug: Log raw response
+        log::debug!("[OPENAI] Raw response:\n{}", response_text);
+
+        let response_data: OpenAICompletionResponse = serde_json::from_str(&response_text)
+            .map_err(|e| format!("Failed to parse OpenAI response: {} - body: {}", e, response_text))?;
 
         let choice = response_data
             .choices
             .first()
             .ok_or_else(|| "OpenAI API returned no choices".to_string())?;
+
+        // Debug: Log parsed response
+        log::info!(
+            "[OPENAI] Response - content_len: {}, tool_calls: {}, finish_reason: {:?}",
+            choice.message.content.as_ref().map(|c| c.len()).unwrap_or(0),
+            choice.message.tool_calls.as_ref().map(|t| t.len()).unwrap_or(0),
+            choice.finish_reason
+        );
 
         let content = choice.message.content.clone().unwrap_or_default();
         let finish_reason = choice.finish_reason.clone();
