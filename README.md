@@ -9,6 +9,16 @@ A cloud-deployable agentic assistant built with Rust and Actix. StarkBot acts as
 - Easy cloud deployment (DigitalOcean, AWS, etc.)
 - Hot-reload development environment
 
+
+
+```
+  STARKBOT IS CURRENTLY IN EARLY ALPHA AND IS MISSING FEATURES 
+
+  WHEN FULL RELEASE IS READY, IT WILL BE ANNOUNCED HERE.  FEEL FREE TO HELP BUILD STARK BOT. 
+  
+```
+
+
 ## Local Development
 
 ### Prerequisites
