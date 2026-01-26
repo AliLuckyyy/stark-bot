@@ -39,6 +39,9 @@ dashmap = "5"
 # Regex for memory marker parsing
 regex = "1"
 
+# Base64 encoding/decoding for Gmail
+base64 = "0.22"
+
 # URL parsing
 url = "2"
 

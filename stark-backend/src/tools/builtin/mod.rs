@@ -1,4 +1,5 @@
 mod agent_send;
+mod apply_patch;
 mod exec;
 mod list_files;
 mod read_file;
@@ -8,6 +9,7 @@ mod web_search;
 mod write_file;
 
 pub use agent_send::AgentSendTool;
+pub use apply_patch::ApplyPatchTool;
 pub use exec::ExecTool;
 pub use list_files::ListFilesTool;
 pub use read_file::ReadFileTool;

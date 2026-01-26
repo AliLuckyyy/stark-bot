@@ -110,12 +110,20 @@ export default function AgentSettings() {
                 </p>
               </div>
 
-              <Input
-                label="API Endpoint URL"
-                value={settings.endpoint || ''}
-                onChange={(e) => updateField('endpoint', e.target.value)}
-                placeholder="https://your-endpoint.com/v1/chat/completions"
-              />
+              <div>
+                <Input
+                  label="API Endpoint URL"
+                  value={settings.endpoint || ''}
+                  onChange={(e) => updateField('endpoint', e.target.value)}
+                  placeholder="https://your-endpoint.com/v1/chat/completions"
+                />
+                <p className="text-xs text-slate-500 mt-1">Example endpoints:</p>
+                <ul className="text-xs text-slate-500 mt-1 ml-4 space-y-0.5">
+                  <li><span className="text-slate-400">OpenAI:</span> https://api.openai.com/v1/chat/completions</li>
+                  <li><span className="text-slate-400">Claude:</span> https://api.anthropic.com/v1/messages</li>
+                  <li><span className="text-slate-400">Ollama:</span> http://localhost:11434/api/chat</li>
+                </ul>
+              </div>
 
               <Input
                 label="Model Name (optional)"

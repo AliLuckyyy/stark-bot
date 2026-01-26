@@ -5,6 +5,7 @@ pub mod channels;
 pub mod chat;
 pub mod cron;
 pub mod dashboard;
+pub mod gmail;
 pub mod health;
 pub mod identity;
 pub mod memories;

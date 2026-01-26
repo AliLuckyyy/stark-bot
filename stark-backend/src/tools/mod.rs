@@ -22,6 +22,7 @@ pub fn create_default_registry() -> ToolRegistry {
     registry.register(Arc::new(builtin::ReadFileTool::new()));
     registry.register(Arc::new(builtin::WriteFileTool::new()));
     registry.register(Arc::new(builtin::ListFilesTool::new()));
+    registry.register(Arc::new(builtin::ApplyPatchTool::new()));
 
     // Register exec tool
     registry.register(Arc::new(builtin::ExecTool::new()));
@@ -48,6 +49,7 @@ pub fn create_registry_with_config(config: ToolConfig) -> ToolRegistry {
     registry.register(Arc::new(builtin::ReadFileTool::new()));
     registry.register(Arc::new(builtin::WriteFileTool::new()));
     registry.register(Arc::new(builtin::ListFilesTool::new()));
+    registry.register(Arc::new(builtin::ApplyPatchTool::new()));
 
     // Register exec tool
     registry.register(Arc::new(builtin::ExecTool::new()));

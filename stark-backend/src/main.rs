@@ -7,10 +7,12 @@ use std::sync::Arc;
 mod ai;
 mod channels;
 mod config;
+mod context;
 mod controllers;
 mod db;
 mod execution;
 mod gateway;
+mod integrations;
 mod middleware;
 mod models;
 mod scheduler;
@@ -154,6 +156,7 @@ async fn main() -> std::io::Result<()> {
             .configure(controllers::tools::config)
             .configure(controllers::skills::config)
             .configure(controllers::cron::config)
+            .configure(controllers::gmail::config)
             // Serve static files, with SPA fallback to index.html for client-side routing
             .service(
                 Files::new("/", "./stark-frontend/dist")

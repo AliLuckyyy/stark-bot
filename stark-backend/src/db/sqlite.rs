@@ -118,10 +118,18 @@ impl Database {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_activity_at TEXT NOT NULL,
-                expires_at TEXT
+                expires_at TEXT,
+                context_tokens INTEGER NOT NULL DEFAULT 0,
+                max_context_tokens INTEGER NOT NULL DEFAULT 100000,
+                compaction_id INTEGER
             )",
             [],
         )?;
+
+        // Migration: Add context management columns if they don't exist
+        let _ = conn.execute("ALTER TABLE chat_sessions ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE chat_sessions ADD COLUMN max_context_tokens INTEGER NOT NULL DEFAULT 100000", []);
+        let _ = conn.execute("ALTER TABLE chat_sessions ADD COLUMN compaction_id INTEGER", []);
 
         // Session messages table - conversation transcripts
         conn.execute(
@@ -384,6 +392,28 @@ impl Database {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (channel_id) REFERENCES external_channels(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        // Gmail integration configuration
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS gmail_configs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                access_token TEXT NOT NULL,
+                refresh_token TEXT NOT NULL,
+                token_expires_at TEXT,
+                watch_labels TEXT NOT NULL DEFAULT 'INBOX',
+                project_id TEXT NOT NULL,
+                topic_name TEXT NOT NULL,
+                watch_expires_at TEXT,
+                history_id TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                response_channel_id INTEGER,
+                auto_reply INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )",
             [],
         )?;
@@ -1029,7 +1059,8 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, session_key, agent_id, scope, channel_type, channel_id, platform_chat_id,
              is_active, reset_policy, idle_timeout_minutes, daily_reset_hour,
-             created_at, updated_at, last_activity_at, expires_at
+             created_at, updated_at, last_activity_at, expires_at,
+             context_tokens, max_context_tokens, compaction_id
              FROM chat_sessions WHERE id = ?1",
         )?;
 
@@ -1047,7 +1078,8 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, session_key, agent_id, scope, channel_type, channel_id, platform_chat_id,
              is_active, reset_policy, idle_timeout_minutes, daily_reset_hour,
-             created_at, updated_at, last_activity_at, expires_at
+             created_at, updated_at, last_activity_at, expires_at,
+             context_tokens, max_context_tokens, compaction_id
              FROM chat_sessions ORDER BY last_activity_at DESC LIMIT 100",
         )?;
 
@@ -1066,7 +1098,8 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, session_key, agent_id, scope, channel_type, channel_id, platform_chat_id,
              is_active, reset_policy, idle_timeout_minutes, daily_reset_hour,
-             created_at, updated_at, last_activity_at, expires_at
+             created_at, updated_at, last_activity_at, expires_at,
+             context_tokens, max_context_tokens, compaction_id
              FROM chat_sessions WHERE session_key = ?1 AND is_active = 1",
         )?;
 
@@ -1181,6 +1214,9 @@ impl Database {
                     .unwrap()
                     .with_timezone(&Utc)
             }),
+            context_tokens: row.get(15).unwrap_or(0),
+            max_context_tokens: row.get(16).unwrap_or(100000),
+            compaction_id: row.get(17).ok(),
         })
     }
 
@@ -1296,6 +1332,101 @@ impl Database {
                 .unwrap()
                 .with_timezone(&Utc),
         })
+    }
+
+    // ============================================
+    // Context Management methods
+    // ============================================
+
+    /// Update the context token count for a session
+    pub fn update_session_context_tokens(&self, session_id: i64, context_tokens: i32) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE chat_sessions SET context_tokens = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![context_tokens, &now, session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Set the compaction ID for a session (after compaction occurs)
+    pub fn set_session_compaction(&self, session_id: i64, compaction_id: i64) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE chat_sessions SET compaction_id = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![compaction_id, &now, session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Get oldest messages for compaction (excludes most recent messages)
+    pub fn get_messages_for_compaction(&self, session_id: i64, keep_recent: i32) -> SqliteResult<Vec<SessionMessage>> {
+        let conn = self.conn.lock().unwrap();
+
+        // Get total count first
+        let total: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM session_messages WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )?;
+
+        let to_compact = (total as i32).saturating_sub(keep_recent);
+        if to_compact <= 0 {
+            return Ok(vec![]);
+        }
+
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, role, content, user_id, user_name, platform_message_id, tokens_used, created_at
+             FROM session_messages WHERE session_id = ?1 ORDER BY created_at ASC LIMIT ?2",
+        )?;
+
+        let messages = stmt
+            .query_map(rusqlite::params![session_id, to_compact], |row| Self::row_to_session_message(row))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(messages)
+    }
+
+    /// Delete old messages after compaction (keeps the most recent messages)
+    pub fn delete_compacted_messages(&self, session_id: i64, keep_recent: i32) -> SqliteResult<i32> {
+        let conn = self.conn.lock().unwrap();
+
+        // Get IDs of messages to delete (all except the most recent)
+        let deleted = conn.execute(
+            "DELETE FROM session_messages WHERE session_id = ?1 AND id NOT IN (
+                SELECT id FROM session_messages WHERE session_id = ?1 ORDER BY created_at DESC LIMIT ?2
+            )",
+            rusqlite::params![session_id, keep_recent],
+        )?;
+
+        Ok(deleted as i32)
+    }
+
+    /// Get the compaction summary for a session (if any)
+    pub fn get_session_compaction_summary(&self, session_id: i64) -> SqliteResult<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+
+        // First get the compaction_id from the session
+        let compaction_id: Option<i64> = conn.query_row(
+            "SELECT compaction_id FROM chat_sessions WHERE id = ?1",
+            [session_id],
+            |row| row.get(0),
+        ).ok().flatten();
+
+        let Some(compaction_id) = compaction_id else {
+            return Ok(None);
+        };
+
+        // Get the compaction memory content
+        let content: Option<String> = conn.query_row(
+            "SELECT content FROM memories WHERE id = ?1",
+            [compaction_id],
+            |row| row.get(0),
+        ).ok();
+
+        Ok(content)
     }
 
     // ============================================
@@ -1662,6 +1793,37 @@ impl Database {
                 .collect()
         } else {
             stmt.query_map(rusqlite::params![min_imp, limit], |row| Self::row_to_memory(row))?
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+
+        Ok(memories)
+    }
+
+    /// Get session summaries (past conversation summaries)
+    pub fn get_session_summaries(&self, identity_id: Option<&str>, limit: i32) -> SqliteResult<Vec<Memory>> {
+        let conn = self.conn.lock().unwrap();
+
+        let sql = if identity_id.is_some() {
+            "SELECT id, memory_type, content, category, tags, importance, identity_id, session_id,
+             source_channel_type, source_message_id, log_date, created_at, updated_at, expires_at
+             FROM memories WHERE memory_type = 'session_summary' AND identity_id = ?1
+             ORDER BY created_at DESC LIMIT ?2"
+        } else {
+            "SELECT id, memory_type, content, category, tags, importance, identity_id, session_id,
+             source_channel_type, source_message_id, log_date, created_at, updated_at, expires_at
+             FROM memories WHERE memory_type = 'session_summary'
+             ORDER BY created_at DESC LIMIT ?1"
+        };
+
+        let mut stmt = conn.prepare(sql)?;
+
+        let memories: Vec<Memory> = if let Some(iid) = identity_id {
+            stmt.query_map(rusqlite::params![iid, limit], |row| Self::row_to_memory(row))?
+                .filter_map(|r| r.ok())
+                .collect()
+        } else {
+            stmt.query_map([limit], |row| Self::row_to_memory(row))?
                 .filter_map(|r| r.ok())
                 .collect()
         };
@@ -2728,5 +2890,200 @@ impl Database {
             .collect();
 
         Ok(configs)
+    }
+
+    // ============================================
+    // Gmail Integration methods
+    // ============================================
+
+    /// Get Gmail configuration (only one config supported currently)
+    pub fn get_gmail_config(&self) -> SqliteResult<Option<crate::integrations::gmail::GmailConfig>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, email, access_token, refresh_token, token_expires_at,
+                    watch_labels, project_id, topic_name, watch_expires_at, history_id,
+                    enabled, response_channel_id, auto_reply, created_at, updated_at
+             FROM gmail_configs LIMIT 1"
+        )?;
+
+        let config = stmt
+            .query_row([], |row| self.map_gmail_config_row(row))
+            .ok();
+
+        Ok(config)
+    }
+
+    /// Get Gmail configuration by email
+    pub fn get_gmail_config_by_email(&self, email: &str) -> SqliteResult<Option<crate::integrations::gmail::GmailConfig>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, email, access_token, refresh_token, token_expires_at,
+                    watch_labels, project_id, topic_name, watch_expires_at, history_id,
+                    enabled, response_channel_id, auto_reply, created_at, updated_at
+             FROM gmail_configs WHERE email = ?1"
+        )?;
+
+        let config = stmt
+            .query_row([email], |row| self.map_gmail_config_row(row))
+            .ok();
+
+        Ok(config)
+    }
+
+    /// Create Gmail configuration
+    pub fn create_gmail_config(
+        &self,
+        email: &str,
+        access_token: &str,
+        refresh_token: &str,
+        project_id: &str,
+        topic_name: &str,
+        watch_labels: &str,
+        response_channel_id: Option<i64>,
+        auto_reply: bool,
+    ) -> SqliteResult<crate::integrations::gmail::GmailConfig> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+
+        conn.execute(
+            "INSERT INTO gmail_configs (email, access_token, refresh_token, project_id, topic_name,
+                                        watch_labels, response_channel_id, auto_reply, enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?9)",
+            rusqlite::params![
+                email, access_token, refresh_token, project_id, topic_name,
+                watch_labels, response_channel_id, auto_reply as i32, &now
+            ],
+        )?;
+
+        let id = conn.last_insert_rowid();
+        drop(conn);
+
+        self.get_gmail_config().map(|opt| opt.unwrap())
+    }
+
+    /// Update Gmail configuration
+    pub fn update_gmail_config(
+        &self,
+        watch_labels: Option<&str>,
+        response_channel_id: Option<i64>,
+        auto_reply: Option<bool>,
+        enabled: Option<bool>,
+    ) -> SqliteResult<crate::integrations::gmail::GmailConfig> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+
+        // Build dynamic update
+        let sql = format!(
+            "UPDATE gmail_configs SET updated_at = ?1{}{}{}{}",
+            watch_labels.map(|_| ", watch_labels = ?2").unwrap_or(""),
+            response_channel_id.map(|_| ", response_channel_id = ?3").unwrap_or(""),
+            auto_reply.map(|_| ", auto_reply = ?4").unwrap_or(""),
+            enabled.map(|_| ", enabled = ?5").unwrap_or(""),
+        );
+
+        conn.execute(
+            &sql,
+            rusqlite::params![
+                &now,
+                watch_labels.unwrap_or(""),
+                response_channel_id.unwrap_or(0),
+                auto_reply.unwrap_or(false) as i32,
+                enabled.unwrap_or(true) as i32,
+            ],
+        )?;
+
+        drop(conn);
+        self.get_gmail_config().map(|opt| opt.unwrap())
+    }
+
+    /// Update Gmail watch info
+    pub fn update_gmail_watch(
+        &self,
+        id: i64,
+        watch_expires_at: Option<chrono::DateTime<Utc>>,
+        history_id: Option<&str>,
+    ) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        let expires_str = watch_expires_at.map(|dt| dt.to_rfc3339());
+
+        conn.execute(
+            "UPDATE gmail_configs SET watch_expires_at = ?1, history_id = ?2, updated_at = ?3 WHERE id = ?4",
+            rusqlite::params![expires_str, history_id, &now, id],
+        )?;
+
+        Ok(())
+    }
+
+    /// Update Gmail history ID
+    pub fn update_gmail_history_id(&self, id: i64, history_id: &str) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+
+        conn.execute(
+            "UPDATE gmail_configs SET history_id = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![history_id, &now, id],
+        )?;
+
+        Ok(())
+    }
+
+    /// Update Gmail tokens
+    pub fn update_gmail_tokens(
+        &self,
+        id: i64,
+        access_token: &str,
+        token_expires_at: Option<chrono::DateTime<Utc>>,
+    ) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        let expires_str = token_expires_at.map(|dt| dt.to_rfc3339());
+
+        conn.execute(
+            "UPDATE gmail_configs SET access_token = ?1, token_expires_at = ?2, updated_at = ?3 WHERE id = ?4",
+            rusqlite::params![access_token, expires_str, &now, id],
+        )?;
+
+        Ok(())
+    }
+
+    /// Delete Gmail configuration
+    pub fn delete_gmail_config(&self) -> SqliteResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let deleted = conn.execute("DELETE FROM gmail_configs", [])?;
+        Ok(deleted > 0)
+    }
+
+    fn map_gmail_config_row(&self, row: &rusqlite::Row) -> rusqlite::Result<crate::integrations::gmail::GmailConfig> {
+        let token_expires_str: Option<String> = row.get(4)?;
+        let watch_expires_str: Option<String> = row.get(8)?;
+        let created_at_str: String = row.get(13)?;
+        let updated_at_str: String = row.get(14)?;
+
+        Ok(crate::integrations::gmail::GmailConfig {
+            id: row.get(0)?,
+            email: row.get(1)?,
+            access_token: row.get(2)?,
+            refresh_token: row.get(3)?,
+            token_expires_at: token_expires_str.and_then(|s| {
+                chrono::DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.with_timezone(&Utc))
+            }),
+            watch_labels: row.get(5)?,
+            project_id: row.get(6)?,
+            topic_name: row.get(7)?,
+            watch_expires_at: watch_expires_str.and_then(|s| {
+                chrono::DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.with_timezone(&Utc))
+            }),
+            history_id: row.get(9)?,
+            enabled: row.get::<_, i32>(10)? != 0,
+            response_channel_id: row.get(11)?,
+            auto_reply: row.get::<_, i32>(12)? != 0,
+            created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
+                .unwrap()
+                .with_timezone(&Utc),
+            updated_at: chrono::DateTime::parse_from_rfc3339(&updated_at_str)
+                .unwrap()
+                .with_timezone(&Utc),
+        })
     }
 }

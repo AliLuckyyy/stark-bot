@@ -10,11 +10,11 @@ export default defineConfig({
     }
   },
   server: {
-    port: 3001,
+    port: 8080,
     proxy: {
-      '/api': 'http://localhost:8080',
+      '/api': 'http://backend:8082',
       '/ws': {
-        target: 'ws://localhost:8081',
+        target: 'ws://backend:8081',
         ws: true,
         changeOrigin: true,
         rewritePath: (path) => path.replace(/^\/ws/, '')

@@ -21,8 +21,8 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
-# Expose ports (HTTP + Gateway WebSocket)
-EXPOSE 8080
+# Expose ports (HTTP API internal + Gateway WebSocket)
+EXPOSE 8082
 EXPOSE 8081
 
 # Run with cargo-watch for hot reloading

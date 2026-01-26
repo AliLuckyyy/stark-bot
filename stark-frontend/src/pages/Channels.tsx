@@ -16,6 +16,7 @@ import {
 const CHANNEL_TYPES = [
   { value: 'telegram', label: 'Telegram', icon: MessageSquare, color: 'blue' },
   { value: 'slack', label: 'Slack', icon: Hash, color: 'purple' },
+  { value: 'discord', label: 'Discord', icon: MessageSquare, color: 'indigo' },
 ];
 
 interface ChannelFormData {

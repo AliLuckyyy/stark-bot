@@ -98,12 +98,21 @@ export interface Session {
   created_at: string;
   updated_at: string;
   message_count?: number;
+  // Context management
+  context_tokens?: number;
+  max_context_tokens?: number;
+  compaction_id?: number;
 }
+
+export type MemoryType = 'daily_log' | 'long_term' | 'session_summary' | 'compaction';
 
 export interface Memory {
   id: string;
+  memory_type?: MemoryType;
   content: string;
   importance?: number;
+  category?: string;
+  tags?: string;
   created_at: string;
 }
 

@@ -96,6 +96,13 @@ pub struct ChatSession {
     pub updated_at: DateTime<Utc>,
     pub last_activity_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
+    // Context management fields
+    /// Estimated token count of current context
+    pub context_tokens: i32,
+    /// Maximum context window size (default: 100000 for Claude)
+    pub max_context_tokens: i32,
+    /// ID of the compaction memory entry if context has been compacted
+    pub compaction_id: Option<i64>,
 }
 
 /// Request to get or create a chat session
@@ -135,6 +142,10 @@ pub struct ChatSessionResponse {
     pub updated_at: DateTime<Utc>,
     pub last_activity_at: DateTime<Utc>,
     pub message_count: Option<i64>,
+    // Context management
+    pub context_tokens: i32,
+    pub max_context_tokens: i32,
+    pub compaction_id: Option<i64>,
 }
 
 impl From<ChatSession> for ChatSessionResponse {
@@ -155,6 +166,9 @@ impl From<ChatSession> for ChatSessionResponse {
             updated_at: session.updated_at,
             last_activity_at: session.last_activity_at,
             message_count: None,
+            context_tokens: session.context_tokens,
+            max_context_tokens: session.max_context_tokens,
+            compaction_id: session.compaction_id,
         }
     }
 }

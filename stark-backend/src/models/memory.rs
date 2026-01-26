@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 pub enum MemoryType {
     DailyLog,
     LongTerm,
+    /// Session summary - saved when a session is reset
+    SessionSummary,
+    /// Compaction summary - condensed older conversation history
+    Compaction,
 }
 
 impl MemoryType {
@@ -14,6 +18,8 @@ impl MemoryType {
         match self {
             MemoryType::DailyLog => "daily_log",
             MemoryType::LongTerm => "long_term",
+            MemoryType::SessionSummary => "session_summary",
+            MemoryType::Compaction => "compaction",
         }
     }
 
@@ -21,6 +27,8 @@ impl MemoryType {
         match s.to_lowercase().as_str() {
             "daily_log" => Some(MemoryType::DailyLog),
             "long_term" => Some(MemoryType::LongTerm),
+            "session_summary" => Some(MemoryType::SessionSummary),
+            "compaction" => Some(MemoryType::Compaction),
             _ => None,
         }
     }

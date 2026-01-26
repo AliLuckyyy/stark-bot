@@ -60,6 +60,9 @@ COPY --from=frontend-builder /app/stark-frontend/dist /app/stark-frontend/dist
 # Copy the skills directory (bundled skills loaded on boot)
 COPY skills /app/skills
 
+# Copy SOUL.md (bot personality/identity)
+COPY SOUL.md /app/SOUL.md
+
 # Expose ports (HTTP + Gateway WebSocket)
 EXPOSE 8080
 EXPOSE 8081
