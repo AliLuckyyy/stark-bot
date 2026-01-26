@@ -1,4 +1,5 @@
-import { Github, ChevronDown, Monitor } from 'lucide-react'
+import { Github, ChevronDown, Monitor, BookOpen } from 'lucide-react'
+import { Link } from 'react-router-dom'
 
 export function Hero() {
   return (
@@ -45,6 +46,13 @@ export function Hero() {
             <Github className="w-6 h-6" />
             View on GitHub
           </a>
+          <Link
+            to="/docs"
+            className="px-8 py-4 bg-slate-800 hover:bg-slate-700 text-white font-semibold rounded-xl transition-all duration-300 border border-slate-700 hover:border-stark-500 flex items-center justify-center gap-3"
+          >
+            <BookOpen className="w-6 h-6" />
+            Read the Docs
+          </Link>
           <a
             href="#features"
             className="px-8 py-4 bg-slate-800 hover:bg-slate-700 text-white font-semibold rounded-xl transition-all duration-300 border border-slate-700 hover:border-stark-500 flex items-center justify-center gap-2"

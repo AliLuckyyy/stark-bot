@@ -4,11 +4,16 @@ use crate::gateway::events::EventBroadcaster;
 use crate::gateway::methods;
 use crate::gateway::protocol::{ChannelIdParams, RpcError, RpcRequest, RpcResponse};
 use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
+
+/// Authentication timeout - client must authenticate within this time
+const AUTH_TIMEOUT_SECS: u64 = 30;
 
 pub struct GatewayServer {
     db: Arc<Database>,
@@ -57,6 +62,12 @@ impl GatewayServer {
     }
 }
 
+/// Parameters for the auth RPC method
+#[derive(Debug, Deserialize)]
+struct AuthParams {
+    token: String,
+}
+
 async fn handle_connection(
     stream: TcpStream,
     db: Arc<Database>,
@@ -66,6 +77,42 @@ async fn handle_connection(
     let ws_stream = accept_async(stream).await?;
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
+    // Phase 1: Authentication required before full access
+    let authenticated = match tokio::time::timeout(
+        Duration::from_secs(AUTH_TIMEOUT_SECS),
+        wait_for_auth(&mut ws_sender, &mut ws_receiver, &db),
+    )
+    .await
+    {
+        Ok(Ok(true)) => true,
+        Ok(Ok(false)) => {
+            log::warn!("Gateway client failed authentication");
+            return Ok(());
+        }
+        Ok(Err(e)) => {
+            log::error!("Gateway auth error: {}", e);
+            return Ok(());
+        }
+        Err(_) => {
+            log::warn!("Gateway client auth timeout after {}s", AUTH_TIMEOUT_SECS);
+            let timeout_response = RpcResponse::error(
+                "".to_string(),
+                RpcError::new(-32000, "Authentication timeout".to_string()),
+            );
+            if let Ok(json) = serde_json::to_string(&timeout_response) {
+                let _ = ws_sender.send(Message::Text(json)).await;
+            }
+            return Ok(());
+        }
+    };
+
+    if !authenticated {
+        return Ok(());
+    }
+
+    log::info!("Gateway client authenticated successfully");
+
+    // Phase 2: Full access after authentication
     // Subscribe to events
     let (client_id, mut event_rx) = broadcaster.subscribe();
 
@@ -123,6 +170,124 @@ async fn handle_connection(
     send_task.abort();
 
     Ok(())
+}
+
+/// Wait for authentication from the client
+/// Client must send: {"jsonrpc":"2.0","id":"1","method":"auth","params":{"token":"..."}}
+async fn wait_for_auth<S, R>(
+    ws_sender: &mut S,
+    ws_receiver: &mut R,
+    db: &Arc<Database>,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>
+where
+    S: SinkExt<Message> + Unpin,
+    R: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+    <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
+{
+    while let Some(msg_result) = ws_receiver.next().await {
+        match msg_result {
+            Ok(Message::Text(text)) => {
+                log::debug!("[Gateway Auth] Received message: {}", text);
+                // Try to parse as RPC request
+                let request: RpcRequest = match serde_json::from_str(&text) {
+                    Ok(req) => req,
+                    Err(_) => {
+                        let response = RpcResponse::error("".to_string(), RpcError::parse_error());
+                        if let Ok(json) = serde_json::to_string(&response) {
+                            let _ = ws_sender.send(Message::Text(json)).await;
+                        }
+                        continue;
+                    }
+                };
+
+                // Only allow "auth" and "ping" methods before authentication
+                match request.method.as_str() {
+                    "auth" => {
+                        let params: AuthParams = match serde_json::from_value(request.params.clone()) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                let response = RpcResponse::error(
+                                    request.id.clone(),
+                                    RpcError::invalid_params(format!("Missing or invalid token: {}", e)),
+                                );
+                                if let Ok(json) = serde_json::to_string(&response) {
+                                    let _ = ws_sender.send(Message::Text(json)).await;
+                                }
+                                continue;
+                            }
+                        };
+
+                        // Validate token against database
+                        match db.validate_session(&params.token) {
+                            Ok(Some(_session)) => {
+                                // Valid session found
+                                let response = RpcResponse::success(
+                                    request.id,
+                                    serde_json::json!({"authenticated": true}),
+                                );
+                                if let Ok(json) = serde_json::to_string(&response) {
+                                    let _ = ws_sender.send(Message::Text(json)).await;
+                                }
+                                return Ok(true);
+                            }
+                            Ok(None) => {
+                                // No valid session found (invalid or expired)
+                                let response = RpcResponse::error(
+                                    request.id,
+                                    RpcError::new(-32001, "Invalid or expired token".to_string()),
+                                );
+                                if let Ok(json) = serde_json::to_string(&response) {
+                                    let _ = ws_sender.send(Message::Text(json)).await;
+                                }
+                                return Ok(false);
+                            }
+                            Err(e) => {
+                                log::error!("Database error validating token: {}", e);
+                                let response = RpcResponse::error(
+                                    request.id,
+                                    RpcError::internal_error(format!("Database error: {}", e)),
+                                );
+                                if let Ok(json) = serde_json::to_string(&response) {
+                                    let _ = ws_sender.send(Message::Text(json)).await;
+                                }
+                                return Ok(false);
+                            }
+                        }
+                    }
+                    "ping" => {
+                        // Allow ping before auth
+                        let response = RpcResponse::success(request.id, serde_json::json!("pong"));
+                        if let Ok(json) = serde_json::to_string(&response) {
+                            let _ = ws_sender.send(Message::Text(json)).await;
+                        }
+                    }
+                    _ => {
+                        // Reject other methods until authenticated
+                        let response = RpcResponse::error(
+                            request.id,
+                            RpcError::new(-32002, "Authentication required. Call 'auth' method first.".to_string()),
+                        );
+                        if let Ok(json) = serde_json::to_string(&response) {
+                            let _ = ws_sender.send(Message::Text(json)).await;
+                        }
+                    }
+                }
+            }
+            Ok(Message::Ping(data)) => {
+                let _ = ws_sender.send(Message::Pong(data)).await;
+            }
+            Ok(Message::Close(_)) => {
+                return Ok(false);
+            }
+            Err(e) => {
+                log::error!("WebSocket error during auth: {}", e);
+                return Err(Box::new(e));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(false)
 }
 
 async fn process_request(

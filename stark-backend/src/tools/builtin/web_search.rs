@@ -3,11 +3,25 @@ use crate::tools::types::{
     PropertySchema, ToolContext, ToolDefinition, ToolGroup, ToolInputSchema, ToolResult,
 };
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
+
+/// Deserialize a u32 from either a number or a string
+fn deserialize_u32_lenient<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: Option<Value> = Option::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(Value::Number(n)) => Ok(n.as_u64().map(|v| v as u32)),
+        Some(Value::String(s)) => Ok(s.parse().ok()),
+        _ => Ok(None),
+    }
+}
 
 /// Cache entry for search results
 struct CacheEntry {
@@ -147,7 +161,7 @@ impl Default for WebSearchTool {
 #[derive(Debug, Deserialize)]
 struct WebSearchParams {
     query: String,
-    #[serde(alias = "num_results")]
+    #[serde(alias = "num_results", default, deserialize_with = "deserialize_u32_lenient")]
     count: Option<u32>,
     country: Option<String>,
     freshness: Option<String>,

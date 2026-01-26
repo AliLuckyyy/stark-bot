@@ -22,6 +22,19 @@ export function Footer() {
           <Github className="w-6 h-6" />
         </a>
       </div>
+      <div className="max-w-6xl mx-auto mt-8 pt-6 border-t border-slate-800 text-center">
+        <p className="text-slate-500 text-sm">
+          made with &lt;3 by{' '}
+          <a
+            href="https://ethereumdegen.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-stark-400 hover:text-stark-300 transition-colors"
+          >
+            @ethereumdegen
+          </a>
+        </p>
+      </div>
     </footer>
   )
 }

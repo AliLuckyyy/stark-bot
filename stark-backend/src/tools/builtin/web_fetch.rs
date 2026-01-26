@@ -3,12 +3,26 @@ use crate::tools::types::{
     PropertySchema, ToolContext, ToolDefinition, ToolGroup, ToolInputSchema, ToolResult,
 };
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
+
+/// Deserialize a usize from either a number or a string
+fn deserialize_usize_lenient<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: Option<Value> = Option::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(Value::Number(n)) => Ok(n.as_u64().map(|v| v as usize)),
+        Some(Value::String(s)) => Ok(s.parse().ok()),
+        _ => Ok(None),
+    }
+}
 
 /// Cache entry for fetch results
 struct CacheEntry {
@@ -128,7 +142,7 @@ impl Default for WebFetchTool {
 #[derive(Debug, Deserialize)]
 struct WebFetchParams {
     url: String,
-    #[serde(alias = "max_length")]
+    #[serde(alias = "max_length", default, deserialize_with = "deserialize_usize_lenient")]
     max_chars: Option<usize>,
     extract_mode: Option<String>,
     // Legacy parameter support

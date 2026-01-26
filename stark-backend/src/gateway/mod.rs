@@ -49,6 +49,7 @@ impl Gateway {
 
     /// Start the Gateway WebSocket server
     pub async fn start(&self, port: u16) {
+        // NOTE: Gateway has no authentication - restrict access via firewall/Docker network
         let addr: SocketAddr = format!("0.0.0.0:{}", port).parse().unwrap();
         let server = GatewayServer::new(
             self.db.clone(),

@@ -1,4 +1,6 @@
-export const gettingStartedContent = `# Getting Started
+---
+name: Getting Started
+---
 
 This guide walks you through setting up and running StarkBot.
 
@@ -12,40 +14,40 @@ This guide walks you through setting up and running StarkBot.
 
 ### 1. Clone the Repository
 
-\`\`\`bash
+```bash
 git clone https://github.com/your-org/stark-bot.git
 cd stark-bot
-\`\`\`
+```
 
 ### 2. Configure Environment
 
-Create a \`.env\` file in the project root:
+Create a `.env` file in the project root:
 
-\`\`\`bash
+```bash
 SECRET_KEY=your-secure-secret-key
 PORT=8080
 GATEWAY_PORT=8081
 DATABASE_URL=./.db/stark.db
 RUST_LOG=info
-\`\`\`
+```
 
-> **Important:** Use a strong, unique \`SECRET_KEY\` - this is used for authentication.
+> **Important:** Use a strong, unique `SECRET_KEY` - this is used for authentication.
 
 ### 3. Run with Docker Compose
 
 **Production:**
-\`\`\`bash
+```bash
 docker-compose up --build
-\`\`\`
+```
 
 **Development (with hot-reload):**
-\`\`\`bash
+```bash
 docker-compose -f docker-compose.dev.yml up --build
-\`\`\`
+```
 
 ### 4. Access the Dashboard
 
-Open \`http://localhost:8080\` in your browser. Log in using your \`SECRET_KEY\`.
+Open `http://localhost:8080` in your browser. Log in using your `SECRET_KEY`.
 
 ---
 
@@ -53,20 +55,20 @@ Open \`http://localhost:8080\` in your browser. Log in using your \`SECRET_KEY\`
 
 ### Backend
 
-\`\`\`bash
+```bash
 cd stark-backend
 cargo run
-\`\`\`
+```
 
 The backend runs on port 8080 (HTTP) and 8081 (WebSocket).
 
 ### Frontend
 
-\`\`\`bash
+```bash
 cd stark-frontend
 npm install
 npm run dev
-\`\`\`
+```
 
 The frontend dev server runs with proxy configuration to the backend.
 
@@ -108,7 +110,7 @@ Visit **Agent Chat** and send a message to verify everything works.
 
 ## Directory Structure
 
-\`\`\`
+```
 stark-bot/
 ├── stark-backend/          # Rust backend
 │   └── src/
@@ -125,7 +127,7 @@ stark-bot/
 ├── .env                    # Environment config
 ├── docker-compose.yml      # Production setup
 └── docker-compose.dev.yml  # Development setup
-\`\`\`
+```
 
 ---
 
@@ -134,4 +136,3 @@ stark-bot/
 - [Architecture](/docs/architecture) - Understand how StarkBot works
 - [Tools](/docs/tools) - Learn about available tools
 - [Skills](/docs/skills) - Create custom skills
-`;

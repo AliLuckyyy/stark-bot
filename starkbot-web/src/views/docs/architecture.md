@@ -1,10 +1,12 @@
-export const architectureContent = `# Architecture
+---
+name: Architecture
+---
 
 StarkBot follows a modular architecture with clear separation between the backend services, frontend dashboard, and external integrations.
 
 ## System Overview
 
-\`\`\`
+```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        External Platforms                        │
 │     Telegram          Slack           Discord          Web       │
@@ -30,13 +32,13 @@ StarkBot follows a modular architecture with clear separation between the backen
          │   AI   │  │  Tools  │  │ Database │
          │ Client │  │ Registry│  │ (SQLite) │
          └────────┘  └─────────┘  └──────────┘
-\`\`\`
+```
 
 ---
 
 ## Backend Components
 
-### Entry Point (\`main.rs\`)
+### Entry Point (`main.rs`)
 
 The backend initializes components in this order:
 
@@ -61,9 +63,9 @@ The backend initializes components in this order:
 
 The dispatcher is the central hub for processing all messages:
 
-\`\`\`
+```
 Message In → Normalize → Get Context → Build Prompt → AI Call → Tool Loop → Store → Respond
-\`\`\`
+```
 
 **Processing Steps:**
 
@@ -72,7 +74,7 @@ Message In → Normalize → Get Context → Build Prompt → AI Call → Tool L
 3. **Build Prompt** - Assemble system prompt with context
 4. **AI Call** - Send to configured AI provider
 5. **Tool Loop** - Execute any tool calls (max 10 iterations)
-6. **Extract Memories** - Parse \`[REMEMBER:]\` markers
+6. **Extract Memories** - Parse `[REMEMBER:]` markers
 7. **Store** - Save to chat history
 8. **Respond** - Send back to originating platform
 
@@ -98,16 +100,16 @@ Built-in tools organized by access level:
 
 | Group | Tools |
 |-------|-------|
-| Web | \`web_search\`, \`web_fetch\` |
-| Filesystem | \`read_file\`, \`write_file\`, \`list_files\`, \`apply_patch\` |
-| Exec | \`exec\` (shell commands) |
-| Messaging | \`agent_send\` |
-| System | \`subagent\`, \`subagent_status\` |
+| Web | `web_search`, `web_fetch` |
+| Filesystem | `read_file`, `write_file`, `list_files`, `apply_patch` |
+| Exec | `exec` (shell commands) |
+| Messaging | `agent_send` |
+| System | `subagent`, `subagent_status` |
 
 ### Skill Registry
 
 Custom skills loaded from:
-- Markdown files (\`.md\`)
+- Markdown files (`.md`)
 - ZIP archives (multiple files)
 - Database storage
 
@@ -117,11 +119,11 @@ Skills extend the agent's capabilities with custom prompts and tool access.
 
 Real-time event broadcasting on port 8081:
 
-- \`channel_message\` - New message received
-- \`tool_execution\` - Tool started
-- \`tool_result\` - Tool completed
-- \`agent_thinking\` - AI processing
-- \`channel_error\` - Error occurred
+- `channel_message` - New message received
+- `tool_execution` - Tool started
+- `tool_result` - Tool completed
+- `agent_thinking` - AI processing
+- `channel_error` - Error occurred
 
 ### Scheduler
 
@@ -162,14 +164,14 @@ Background job runner checking every 10 seconds:
 
 The frontend maintains a WebSocket connection to the gateway:
 
-\`\`\`typescript
+```typescript
 // Gateway client auto-connects and handles events
 useGateway({
   onToolExecution: (event) => setProgress(event),
   onToolResult: (event) => updateResults(event),
   onMessage: (event) => addMessage(event)
 });
-\`\`\`
+```
 
 ---
 
@@ -177,7 +179,7 @@ useGateway({
 
 ### Message Processing
 
-\`\`\`
+```
 1. User sends "What's the weather in NYC?"
    ↓
 2. Telegram handler receives update
@@ -197,11 +199,11 @@ useGateway({
 9. Response stored in chat_sessions
    ↓
 10. Response sent to Telegram
-\`\`\`
+```
 
 ### Cron Job Execution
 
-\`\`\`
+```
 1. Scheduler checks for due jobs
    ↓
 2. Job with cron "0 9 * * MON" is due
@@ -213,7 +215,7 @@ useGateway({
 5. Response logged to job history
    ↓
 6. Next run time calculated
-\`\`\`
+```
 
 ---
 
@@ -223,4 +225,3 @@ useGateway({
 - **API Keys** - Encrypted at rest in SQLite
 - **Tool Restrictions** - Dangerous commands blocklisted
 - **CORS** - Configured for allowed origins
-`;

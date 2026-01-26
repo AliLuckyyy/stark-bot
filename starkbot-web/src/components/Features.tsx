@@ -1,4 +1,4 @@
-import { Zap, Code2, Puzzle, Lock, MessageCircle, BarChart3, AlertTriangle } from 'lucide-react'
+import { Zap, Code, Box, Lock, MessageCircle, BarChart2, AlertTriangle } from 'lucide-react'
 
 const features = [
   {
@@ -7,12 +7,12 @@ const features = [
     description: 'Powered by cutting-edge AI models, StarkBot responds instantly and handles complex tasks with ease.',
   },
   {
-    icon: Code2,
+    icon: Code,
     title: 'Open Source',
     description: "Fully open source and self-hostable. Own your data and customize to your heart's content.",
   },
   {
-    icon: Puzzle,
+    icon: Box,
     title: 'Extensible',
     description: 'Easy to integrate with your existing tools and workflows. Build custom plugins and automations.',
   },
@@ -27,7 +27,7 @@ const features = [
     description: 'Talk naturally with StarkBot. It understands context and remembers your preferences.',
   },
   {
-    icon: BarChart3,
+    icon: BarChart2,
     title: 'Analytics & Insights',
     description: 'Track your productivity and get insights into how StarkBot is helping you work smarter.',
   },

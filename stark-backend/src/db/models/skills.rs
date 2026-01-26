@@ -114,6 +114,21 @@ impl Database {
         Ok(skills)
     }
 
+    /// Get an enabled skill by name (more efficient than loading all skills)
+    pub fn get_enabled_skill_by_name(&self, name: &str) -> SqliteResult<Option<DbSkill>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, body, version, author, homepage, metadata, enabled, requires_tools, requires_binaries, arguments, tags, created_at, updated_at
+             FROM skills WHERE name = ?1 AND enabled = 1 LIMIT 1"
+        )?;
+
+        let skill = stmt
+            .query_row([name], |row| Self::row_to_db_skill(row))
+            .ok();
+
+        Ok(skill)
+    }
+
     /// Update skill enabled status
     pub fn set_skill_enabled(&self, name: &str, enabled: bool) -> SqliteResult<bool> {
         let conn = self.conn.lock().unwrap();

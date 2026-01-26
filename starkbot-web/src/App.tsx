@@ -1,43 +1,33 @@
-import { useEffect } from 'react'
-import { Navbar } from './components/Navbar'
-import { Hero } from './components/Hero'
-import { Features } from './components/Features'
-import { GetStarted } from './components/GetStarted'
-import { CTA } from './components/CTA'
-import { Footer } from './components/Footer'
-import { Stars } from './components/Stars'
+import { Routes, Route } from 'react-router-dom'
+import Home from './pages/Home'
+
+// Import markdown docs as components
+import DocsOverview from './views/docs/overview.md'
+import DocsGettingStarted from './views/docs/getting-started.md'
+import DocsArchitecture from './views/docs/architecture.md'
+import DocsApi from './views/docs/api.md'
+import DocsTools from './views/docs/tools.md'
+import DocsSkills from './views/docs/skills.md'
+import DocsChannels from './views/docs/channels.md'
+import DocsScheduling from './views/docs/scheduling.md'
+import DocsMemories from './views/docs/memories.md'
+import DocsConfiguration from './views/docs/configuration.md'
 
 function App() {
-  useEffect(() => {
-    // Smooth scroll for anchor links
-    const handleClick = (e: MouseEvent) => {
-      const target = e.target as HTMLElement
-      const anchor = target.closest('a[href^="#"]')
-      if (anchor) {
-        e.preventDefault()
-        const id = anchor.getAttribute('href')?.slice(1)
-        const element = document.getElementById(id || '')
-        if (element) {
-          element.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        }
-      }
-    }
-    document.addEventListener('click', handleClick)
-    return () => document.removeEventListener('click', handleClick)
-  }, [])
-
   return (
-    <div className="min-h-screen overflow-x-hidden">
-      <Stars />
-      <div className="relative z-10">
-        <Navbar />
-        <Hero />
-        <Features />
-        <GetStarted />
-        <CTA />
-        <Footer />
-      </div>
-    </div>
+    <Routes>
+      <Route path="/" element={<Home />} />
+      <Route path="/docs" element={<DocsOverview />} />
+      <Route path="/docs/getting-started" element={<DocsGettingStarted />} />
+      <Route path="/docs/architecture" element={<DocsArchitecture />} />
+      <Route path="/docs/api" element={<DocsApi />} />
+      <Route path="/docs/tools" element={<DocsTools />} />
+      <Route path="/docs/skills" element={<DocsSkills />} />
+      <Route path="/docs/channels" element={<DocsChannels />} />
+      <Route path="/docs/scheduling" element={<DocsScheduling />} />
+      <Route path="/docs/memories" element={<DocsMemories />} />
+      <Route path="/docs/configuration" element={<DocsConfiguration />} />
+    </Routes>
   )
 }
 

@@ -559,25 +559,30 @@ impl MessageDispatcher {
 
         log::info!("[SKILL] Executing skill '{}' with input: {}", skill_name, input);
 
-        // Look up the skill
-        let skills = match self.db.list_enabled_skills() {
+        // Look up the specific skill by name (more efficient than loading all skills)
+        let skill = match self.db.get_enabled_skill_by_name(skill_name) {
             Ok(s) => s,
             Err(e) => {
-                return crate::tools::ToolResult::error(format!("Failed to load skills: {}", e));
+                return crate::tools::ToolResult::error(format!("Failed to load skill: {}", e));
             }
         };
 
-        let skill = skills.iter().find(|s| s.name == skill_name && s.enabled);
-
         match skill {
             Some(skill) => {
+                // Determine the skills directory path
+                let skills_dir = std::env::var("STARK_SKILLS_DIR")
+                    .unwrap_or_else(|_| "./skills".to_string());
+                let skill_base_dir = format!("{}/{}", skills_dir, skill.name);
+
                 // Return the skill's instructions/body along with context
                 let mut result = format!("## Skill: {}\n\n", skill.name);
                 result.push_str(&format!("Description: {}\n\n", skill.description));
 
                 if !skill.body.is_empty() {
+                    // Replace {baseDir} placeholder with actual skill directory
+                    let body_with_paths = skill.body.replace("{baseDir}", &skill_base_dir);
                     result.push_str("### Instructions:\n");
-                    result.push_str(&skill.body);
+                    result.push_str(&body_with_paths);
                     result.push_str("\n\n");
                 }
 
@@ -587,14 +592,14 @@ impl MessageDispatcher {
                 crate::tools::ToolResult::success(&result)
             }
             None => {
+                // Fetch available skills for the error message
+                let available = self.db.list_enabled_skills()
+                    .map(|skills| skills.iter().map(|s| s.name.clone()).collect::<Vec<_>>().join(", "))
+                    .unwrap_or_else(|_| "unknown".to_string());
                 crate::tools::ToolResult::error(format!(
                     "Skill '{}' not found or not enabled. Available skills: {}",
                     skill_name,
-                    skills.iter()
-                        .filter(|s| s.enabled)
-                        .map(|s| s.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    available
                 ))
             }
         }
@@ -966,24 +971,14 @@ impl MessageDispatcher {
             prompt.push_str("**IMPORTANT**: For weather, news, or live data - USE TOOLS IMMEDIATELY. Do not say you cannot access real-time data.\n\n");
         }
 
-        // Add skill details for context
+        // Add available skills (name + description only - full body provided when use_skill is called)
         if !active_skills.is_empty() {
-            prompt.push_str("## SKILL DETAILS\n\n");
+            prompt.push_str("## AVAILABLE SKILLS\n\n");
+            prompt.push_str("Use the `use_skill` tool to activate a skill. The skill instructions will be provided when activated.\n\n");
             for skill in &active_skills {
-                prompt.push_str(&format!("### {}\n", skill.name));
-                prompt.push_str(&format!("{}\n\n", skill.description));
-                if !skill.body.is_empty() {
-                    // Include full skill body (truncate if extremely long)
-                    let body = if skill.body.len() > 4000 {
-                        format!("{}...\n[truncated]", &skill.body[..4000])
-                    } else {
-                        skill.body.clone()
-                    };
-                    prompt.push_str(&body);
-                    prompt.push_str("\n");
-                }
-                prompt.push_str("\n");
+                prompt.push_str(&format!("- **{}**: {}\n", skill.name, skill.description));
             }
+            prompt.push_str("\n");
         }
 
         // Add daily logs context

@@ -16,7 +16,7 @@ tell me about the weather currently in austin texas
 3. Every 1 hour,  fetch the weather in detroit michigan and  post that to discord.  
 
 
-4. every 24 hours,  make a report summary of the recent PRs on  https://github.com/clawdbot/clawdbot  and post them in discord 
+4. every 24 hours,  make a report summary of the recent PRs on  https://github.com/clawdbot/clawdbot  and post that report summary in discord 
 
 
 

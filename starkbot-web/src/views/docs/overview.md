@@ -1,4 +1,6 @@
-export const overviewContent = `# StarkBot Documentation
+---
+name: StarkBot Documentation
+---
 
 Welcome to the StarkBot documentation. StarkBot is a cloud-deployable agentic assistant that interfaces with multiple messaging platforms and integrates AI-powered conversation handling with task automation.
 
@@ -54,4 +56,3 @@ WebSocket-based event broadcasting for live tool execution progress and message 
 | Styling | Tailwind CSS |
 | WebSocket | tokio-tungstenite |
 | AI Providers | Anthropic Claude, OpenAI, Llama |
-`;

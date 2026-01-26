@@ -20,6 +20,7 @@ export class GatewayClient {
   private intentionalDisconnect = false;
   private connectionPromise: Promise<void> | null = null;
   private connectionResolve: (() => void) | null = null;
+  private authenticated = false;
 
   constructor(url?: string) {
     if (url) {
@@ -41,7 +42,7 @@ export class GatewayClient {
   }
 
   connect(): Promise<void> {
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    if (this.ws?.readyState === WebSocket.OPEN && this.authenticated) {
       return Promise.resolve();
     }
 
@@ -55,14 +56,26 @@ export class GatewayClient {
       try {
         this.ws = new WebSocket(this.url);
 
-        this.ws.onopen = () => {
-          console.log('[Gateway] Connected to', this.url);
+        this.ws.onopen = async () => {
+          console.log('[Gateway] WebSocket connected to', this.url);
           this.reconnectAttempts = 0;
           this.reconnectDelay = 1000;
-          this.emitEvent('connected', {});
-          if (this.connectionResolve) {
-            this.connectionResolve();
-            this.connectionResolve = null;
+
+          // Authenticate with the gateway
+          try {
+            await this.authenticate();
+            this.authenticated = true;
+            console.log('[Gateway] Authenticated successfully');
+            this.emitEvent('connected', {});
+            if (this.connectionResolve) {
+              this.connectionResolve();
+              this.connectionResolve = null;
+            }
+          } catch (authError) {
+            console.error('[Gateway] Authentication failed:', authError);
+            this.emitEvent('auth_failed', { error: authError });
+            this.ws?.close();
+            reject(authError);
           }
         };
 
@@ -72,6 +85,7 @@ export class GatewayClient {
 
         this.ws.onclose = () => {
           console.log('[Gateway] Connection closed');
+          this.authenticated = false;
           this.emitEvent('disconnected', {});
           this.connectionPromise = null;
 
@@ -95,6 +109,54 @@ export class GatewayClient {
     });
 
     return this.connectionPromise;
+  }
+
+  private async authenticate(): Promise<void> {
+    // Get auth token from localStorage (same as used by API)
+    const token = localStorage.getItem('stark_token');
+    if (!token) {
+      console.warn('[Gateway] No auth token in localStorage - user may not be logged in');
+      throw new Error('No auth token found. Please log in first.');
+    }
+    console.log('[Gateway] Sending auth request with token length:', token.length);
+
+    // Send auth request
+    const id = crypto.randomUUID();
+    const request = {
+      jsonrpc: '2.0',
+      id,
+      method: 'auth',
+      params: { token },
+    };
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Authentication timed out'));
+      }, 10000);
+
+      const handleAuthResponse = (event: MessageEvent) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.id === id) {
+            clearTimeout(timeout);
+            this.ws?.removeEventListener('message', handleAuthResponse);
+
+            if (message.error) {
+              reject(new Error(message.error.message || 'Authentication failed'));
+            } else if (message.result?.authenticated) {
+              resolve();
+            } else {
+              reject(new Error('Unexpected auth response'));
+            }
+          }
+        } catch {
+          // Ignore parse errors for other messages
+        }
+      };
+
+      this.ws?.addEventListener('message', handleAuthResponse);
+      this.ws?.send(JSON.stringify(request));
+    });
   }
 
   private handleMessage(data: string): void {
@@ -193,11 +255,12 @@ export class GatewayClient {
   }
 
   isConnected(): boolean {
-    return this.ws?.readyState === WebSocket.OPEN;
+    return this.ws?.readyState === WebSocket.OPEN && this.authenticated;
   }
 
   disconnect(): void {
     this.intentionalDisconnect = true;
+    this.authenticated = false;
     if (this.ws) {
       this.ws.close();
       this.ws = null;

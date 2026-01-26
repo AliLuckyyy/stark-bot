@@ -27,6 +27,8 @@ services:
       - RUST_LOG=debug
       - RUST_BACKTRACE=1
       - PORT=8082
+      - STARK_SKILLS_DIR=/app/skills
+      - PATH=/root/.local/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
   frontend:
     build:

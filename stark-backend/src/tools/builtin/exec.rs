@@ -3,7 +3,7 @@ use crate::tools::types::{
     PropertySchema, ToolContext, ToolDefinition, ToolGroup, ToolInputSchema, ToolResult,
 };
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -11,6 +11,20 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout;
+
+/// Deserialize a u64 from either a number or a string
+fn deserialize_u64_lenient<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: Option<Value> = Option::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(Value::Number(n)) => Ok(n.as_u64()),
+        Some(Value::String(s)) => Ok(s.parse().ok()),
+        _ => Ok(None),
+    }
+}
 
 /// Command execution tool with configurable security
 pub struct ExecTool {
@@ -134,6 +148,7 @@ impl Default for ExecTool {
 struct ExecParams {
     command: String,
     workdir: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_u64_lenient")]
     timeout: Option<u64>,
     env: Option<HashMap<String, String>>,
 }
