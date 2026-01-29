@@ -59,7 +59,8 @@ impl ModelArchetype for KimiArchetype {
         }
 
         prompt.push_str("\n**IMPORTANT**: When a user asks for something that a tool can provide, ");
-        prompt.push_str("USE the tool. Do not say you cannot do something if a tool is available.\n");
+        prompt.push_str("USE the tool via the native tool_calls mechanism. ");
+        prompt.push_str("Do not output tool calls as text.\n");
 
         prompt
     }
