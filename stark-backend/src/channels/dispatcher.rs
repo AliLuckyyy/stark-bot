@@ -1,4 +1,7 @@
-use crate::ai::{AiClient, Message, MessageRole, ThinkingLevel, ToolCall, ToolHistoryEntry, ToolResponse};
+use crate::ai::{
+    AiClient, ArchetypeId, ArchetypeRegistry, Message, MessageRole, ModelArchetype,
+    ThinkingLevel, ToolCall, ToolHistoryEntry, ToolResponse,
+};
 use crate::channels::types::{DispatchResult, NormalizedMessage};
 use crate::context::{self, estimate_tokens, ContextManager};
 use crate::db::Database;
@@ -7,29 +10,14 @@ use crate::gateway::events::EventBroadcaster;
 use crate::gateway::protocol::GatewayEvent;
 use crate::models::{MemoryType, SessionScope};
 use crate::models::session_message::MessageRole as DbMessageRole;
-use crate::tools::{ToolConfig, ToolContext, ToolExecution, ToolRegistry};
+use crate::tools::{ToolConfig, ToolContext, ToolDefinition, ToolExecution, ToolRegistry};
 use chrono::Utc;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
 /// Maximum number of tool execution iterations
 const MAX_TOOL_ITERATIONS: usize = 10;
-
-/// JSON response format from the AI when using text-based tool calling
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct AgentResponse {
-    body: String,
-    tool_call: Option<TextToolCall>,
-}
-
-/// Tool call extracted from text-based JSON response
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct TextToolCall {
-    tool_name: String,
-    tool_params: Value,
-}
 
 /// Dispatcher routes messages to the AI and returns responses
 pub struct MessageDispatcher {
@@ -39,6 +27,7 @@ pub struct MessageDispatcher {
     execution_tracker: Arc<ExecutionTracker>,
     burner_wallet_private_key: Option<String>,
     context_manager: ContextManager,
+    archetype_registry: ArchetypeRegistry,
     // Regex patterns for memory markers
     daily_log_pattern: Regex,
     remember_pattern: Regex,
@@ -72,6 +61,7 @@ impl MessageDispatcher {
             execution_tracker,
             burner_wallet_private_key,
             context_manager,
+            archetype_registry: ArchetypeRegistry::new(),
             daily_log_pattern: Regex::new(r"\[DAILY_LOG:\s*(.+?)\]").unwrap(),
             remember_pattern: Regex::new(r"\[REMEMBER:\s*(.+?)\]").unwrap(),
             remember_important_pattern: Regex::new(r"\[REMEMBER_IMPORTANT:\s*(.+?)\]").unwrap(),
@@ -91,6 +81,7 @@ impl MessageDispatcher {
             execution_tracker,
             burner_wallet_private_key: None,
             context_manager,
+            archetype_registry: ArchetypeRegistry::new(),
             daily_log_pattern: Regex::new(r"\[DAILY_LOG:\s*(.+?)\]").unwrap(),
             remember_pattern: Regex::new(r"\[REMEMBER:\s*(.+?)\]").unwrap(),
             remember_important_pattern: Regex::new(r"\[REMEMBER_IMPORTANT:\s*(.+?)\]").unwrap(),
@@ -201,11 +192,13 @@ impl MessageDispatcher {
             }
         };
 
+        // Infer archetype from settings
+        let archetype_id = AiClient::infer_archetype(&settings);
         log::info!(
-            "Using {} provider with model {} for message dispatch (api_key_len={})",
-            settings.provider,
-            settings.model,
-            settings.api_key.len()
+            "Using endpoint {} for message dispatch (archetype={}, max_tokens={})",
+            settings.endpoint,
+            archetype_id,
+            settings.max_tokens
         );
 
         // Create AI client from settings with x402 wallet support
@@ -319,9 +312,9 @@ impl MessageDispatcher {
             }
         }
 
-        // Load bot config from agent settings for git commits etc.
-        if let Ok(Some(settings)) = self.db.get_active_agent_settings() {
-            tool_context = tool_context.with_bot_config(settings.bot_name, settings.bot_email);
+        // Load bot config from bot_settings for git commits etc.
+        if let Ok(bot_settings) = self.db.get_bot_settings() {
+            tool_context = tool_context.with_bot_config(bot_settings.bot_name, bot_settings.bot_email);
         }
 
         // Generate response with optional tool execution loop
@@ -334,6 +327,7 @@ impl MessageDispatcher {
                 &identity.identity_id,
                 session.id,
                 &message,
+                archetype_id,
             ).await
         } else {
             // Simple generation without tools - with x402 event emission
@@ -393,10 +387,10 @@ impl MessageDispatcher {
                 ));
 
                 log::info!(
-                    "Generated response for {} on channel {} using {}",
+                    "Generated response for {} on channel {} using {} archetype",
                     message.user_name,
                     message.channel_id,
-                    settings.provider
+                    archetype_id
                 );
 
                 // Complete execution tracking
@@ -405,7 +399,7 @@ impl MessageDispatcher {
                 DispatchResult::success(clean_response)
             }
             Err(e) => {
-                let error = format!("AI generation error ({}): {}", settings.provider, e);
+                let error = format!("AI generation error ({}): {}", archetype_id, e);
                 log::error!("{}", error);
 
                 // Complete execution tracking on error
@@ -426,8 +420,14 @@ impl MessageDispatcher {
         _identity_id: &str,
         _session_id: i64,
         original_message: &NormalizedMessage,
+        archetype_id: ArchetypeId,
     ) -> Result<String, String> {
-        let tools = self.tool_registry.get_tool_definitions(tool_config);
+        let mut tools = self.tool_registry.get_tool_definitions(tool_config);
+
+        // Add skills as a "use_skill" pseudo-tool if any are enabled
+        if let Some(skill_tool) = self.create_skill_tool_definition() {
+            tools.push(skill_tool);
+        }
 
         // Debug: Log available tools
         log::info!(
@@ -441,31 +441,185 @@ impl MessageDispatcher {
             return client.generate_text_with_events(messages, &self.broadcaster, original_message.channel_id).await;
         }
 
+        // Get the archetype for this request
+        let archetype = self.archetype_registry.get(archetype_id)
+            .unwrap_or_else(|| self.archetype_registry.default_archetype());
+
+        log::info!(
+            "[TOOL_LOOP] Using archetype: {} (native_tool_calling: {})",
+            archetype.id(),
+            archetype.uses_native_tool_calling()
+        );
+
+        // Branch based on archetype type
+        if archetype.uses_native_tool_calling() {
+            self.generate_with_native_tools(client, messages, tools, tool_config, tool_context, original_message).await
+        } else {
+            self.generate_with_text_tools(client, messages, tools, tool_config, tool_context, original_message, archetype).await
+        }
+    }
+
+    /// Create a "use_skill" tool definition if skills are enabled
+    fn create_skill_tool_definition(&self) -> Option<ToolDefinition> {
+        use crate::tools::{PropertySchema, ToolGroup, ToolInputSchema};
+
+        let skills = self.db.list_enabled_skills().ok()?;
+        let active_skills: Vec<_> = skills.iter().filter(|s| s.enabled).collect();
+
+        if active_skills.is_empty() {
+            return None;
+        }
+
+        let skill_names: Vec<String> = active_skills.iter().map(|s| s.name.clone()).collect();
+        let skill_descriptions: Vec<String> = active_skills
+            .iter()
+            .map(|s| format!("{}: {}", s.name, s.description))
+            .collect();
+
+        let mut properties = std::collections::HashMap::new();
+        properties.insert(
+            "skill_name".to_string(),
+            PropertySchema {
+                schema_type: "string".to_string(),
+                description: format!("The skill to execute. Options: {}", skill_names.join(", ")),
+                default: None,
+                items: None,
+                enum_values: Some(skill_names),
+            },
+        );
+        properties.insert(
+            "input".to_string(),
+            PropertySchema {
+                schema_type: "string".to_string(),
+                description: "Input or query for the skill".to_string(),
+                default: None,
+                items: None,
+                enum_values: None,
+            },
+        );
+
+        Some(ToolDefinition {
+            name: "use_skill".to_string(),
+            description: format!(
+                "Execute a skill. Available skills: {}",
+                skill_descriptions.join("; ")
+            ),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties,
+                required: vec!["skill_name".to_string(), "input".to_string()],
+            },
+            group: ToolGroup::System,
+        })
+    }
+
+    /// Generate response using native API tool calling (Kimi, OpenAI, Claude)
+    async fn generate_with_native_tools(
+        &self,
+        client: &AiClient,
+        messages: Vec<Message>,
+        tools: Vec<ToolDefinition>,
+        tool_config: &ToolConfig,
+        tool_context: &ToolContext,
+        original_message: &NormalizedMessage,
+    ) -> Result<String, String> {
+        let mut tool_history: Vec<ToolHistoryEntry> = Vec::new();
+        let mut iterations = 0;
+
+        loop {
+            iterations += 1;
+            log::info!("[NATIVE_TOOL_LOOP] Iteration {} starting", iterations);
+
+            if iterations > MAX_TOOL_ITERATIONS {
+                log::warn!("Native tool loop exceeded max iterations ({})", MAX_TOOL_ITERATIONS);
+                break;
+            }
+
+            // Generate with native tool support
+            let ai_response = client.generate_with_tools(
+                messages.clone(),
+                tool_history.clone(),
+                tools.clone(),
+            ).await?;
+
+            log::info!(
+                "[NATIVE_TOOL_LOOP] Response - content_len: {}, tool_calls: {}, stop_reason: {:?}",
+                ai_response.content.len(),
+                ai_response.tool_calls.len(),
+                ai_response.stop_reason
+            );
+
+            // If no tool calls, return the content
+            if ai_response.tool_calls.is_empty() {
+                return Ok(ai_response.content);
+            }
+
+            // Execute tool calls
+            let tool_responses = self.execute_tool_calls(
+                &ai_response.tool_calls,
+                tool_config,
+                tool_context,
+                original_message.channel_id,
+            ).await;
+
+            // Add to tool history for next iteration
+            tool_history.push(ToolHistoryEntry::new(
+                ai_response.tool_calls,
+                tool_responses,
+            ));
+        }
+
+        // If we hit max iterations, return whatever content we have
+        Err("Native tool loop completed without final response".to_string())
+    }
+
+    /// Generate response using text-based JSON tool calling (Llama archetype)
+    async fn generate_with_text_tools(
+        &self,
+        client: &AiClient,
+        messages: Vec<Message>,
+        tools: Vec<ToolDefinition>,
+        tool_config: &ToolConfig,
+        tool_context: &ToolContext,
+        original_message: &NormalizedMessage,
+        archetype: &dyn ModelArchetype,
+    ) -> Result<String, String> {
+        // Enhance system prompt with tool-calling instructions
         let mut conversation = messages.clone();
+        if let Some(system_msg) = conversation.first_mut() {
+            if system_msg.role == MessageRole::System {
+                system_msg.content = archetype.enhance_system_prompt(&system_msg.content, &tools);
+            }
+        }
+
         let mut final_response = String::new();
         let mut iterations = 0;
 
         loop {
             iterations += 1;
-            log::info!("[TOOL_LOOP] Iteration {} starting", iterations);
+            log::info!("[TEXT_TOOL_LOOP] Iteration {} starting", iterations);
 
             if iterations > MAX_TOOL_ITERATIONS {
-                log::warn!("Tool execution loop exceeded max iterations ({})", MAX_TOOL_ITERATIONS);
+                log::warn!("Text-based tool loop exceeded max iterations ({})", MAX_TOOL_ITERATIONS);
                 break;
             }
 
-            // Generate response (text-only since we're doing JSON-based tool calling) - with x402 events
-            let ai_content = client.generate_text_with_events(conversation.clone(), &self.broadcaster, original_message.channel_id).await?;
+            // Generate response (text-only) - with x402 events
+            let ai_content = client.generate_text_with_events(
+                conversation.clone(),
+                &self.broadcaster,
+                original_message.channel_id,
+            ).await?;
 
-            log::info!("[TOOL_LOOP] Raw AI response: {}", ai_content);
+            log::info!("[TEXT_TOOL_LOOP] Raw AI response: {}", ai_content);
 
-            // Try to parse as JSON AgentResponse
-            let parsed = self.parse_agent_response(&ai_content);
+            // Parse response using archetype's parser
+            let parsed = archetype.parse_response(&ai_content);
 
             match parsed {
                 Some(agent_response) => {
                     log::info!(
-                        "[TOOL_LOOP] Parsed response - body_len: {}, has_tool_call: {}",
+                        "[TEXT_TOOL_LOOP] Parsed response - body_len: {}, has_tool_call: {}",
                         agent_response.body.len(),
                         agent_response.tool_call.is_some()
                     );
@@ -473,7 +627,7 @@ impl MessageDispatcher {
                     // Check if there's a tool call
                     if let Some(tool_call) = agent_response.tool_call {
                         log::info!(
-                            "[TOOL_LOOP] Text-based tool call: {} with params: {}",
+                            "[TEXT_TOOL_LOOP] Text-based tool call: {} with params: {}",
                             tool_call.tool_name,
                             tool_call.tool_params
                         );
@@ -491,8 +645,8 @@ impl MessageDispatcher {
                             ).await
                         };
 
-                        log::info!("[TOOL_LOOP] Tool result success: {}", tool_result.success);
-                        log::debug!("[TOOL_LOOP] Tool result content: {}", tool_result.content);
+                        log::info!("[TEXT_TOOL_LOOP] Tool result success: {}", tool_result.success);
+                        log::debug!("[TEXT_TOOL_LOOP] Tool result content: {}", tool_result.content);
 
                         // Broadcast tool execution event
                         let _ = self.broadcaster.broadcast(GatewayEvent::tool_result(
@@ -509,32 +663,11 @@ impl MessageDispatcher {
                         });
 
                         // Add tool result as user message for next iteration
-                        let followup_prompt = if tool_result.success {
-                            format!(
-                                "Tool '{}' returned:\n{}\n\nNow provide your final response to the user based on this result. Remember to respond in JSON format.",
-                                tool_call.tool_name,
-                                tool_result.content
-                            )
-                        } else {
-                            // Check if this is a git permission error (can be solved by forking)
-                            let error_lower = tool_result.content.to_lowercase();
-                            let is_git_permission = (error_lower.contains("permission") || error_lower.contains("403") || error_lower.contains("denied"))
-                                && (error_lower.contains("git") || error_lower.contains("github") || error_lower.contains("push"));
-
-                            if is_git_permission {
-                                format!(
-                                    "Tool '{}' FAILED with error:\n{}\n\nYou don't have push access to this repository. To contribute to repos you don't own, use the FORK workflow:\n1. Fork the repo: `gh repo fork OWNER/REPO --clone`\n2. Make changes in the forked repo\n3. Push to YOUR fork\n4. Create PR: `gh pr create --repo OWNER/REPO`\n\nTry the fork workflow. Remember to respond in JSON format.",
-                                    tool_call.tool_name,
-                                    tool_result.content
-                                )
-                            } else {
-                                format!(
-                                    "Tool '{}' FAILED with error:\n{}\n\nTry a different approach if possible. Common fixes:\n- If directory exists: cd into it instead of cloning\n- If command not found: try alternative command\n- If permission denied: check if you need to fork the repo first\n\nIf truly impossible, explain why. Remember to respond in JSON format.",
-                                    tool_call.tool_name,
-                                    tool_result.content
-                                )
-                            }
-                        };
+                        let followup_prompt = archetype.format_tool_followup(
+                            &tool_call.tool_name,
+                            &tool_result.content,
+                            tool_result.success,
+                        );
                         conversation.push(Message {
                             role: MessageRole::User,
                             content: followup_prompt,
@@ -549,8 +682,8 @@ impl MessageDispatcher {
                     }
                 }
                 None => {
-                    // Couldn't parse as JSON, return raw content
-                    log::warn!("[TOOL_LOOP] Could not parse response as JSON, returning raw content");
+                    // Couldn't parse as structured response, return raw content
+                    log::warn!("[TEXT_TOOL_LOOP] Could not parse response, returning raw content");
                     final_response = ai_content;
                     break;
                 }
@@ -621,159 +754,7 @@ impl MessageDispatcher {
         }
     }
 
-    /// Parse AI response as JSON AgentResponse, with fallback extraction
-    fn parse_agent_response(&self, content: &str) -> Option<AgentResponse> {
-        let content = content.trim();
-
-        // Try direct JSON parse first
-        if let Ok(response) = serde_json::from_str::<AgentResponse>(content) {
-            return Some(response);
-        }
-
-        // Try to parse as typed JSON response
-        // {"type": "message", "content": "..."} or {"type": "function", ...}
-        if let Ok(json) = serde_json::from_str::<Value>(content) {
-            if let Some(msg_type) = json.get("type").and_then(|v| v.as_str()) {
-                // Handle message type - just extract content
-                if msg_type == "message" {
-                    if let Some(content_str) = json.get("content").and_then(|v| v.as_str()) {
-                        log::info!("[PARSE] Extracted message content from type:message format");
-                        return Some(AgentResponse {
-                            body: content_str.to_string(),
-                            tool_call: None,
-                        });
-                    }
-                }
-                // Handle function call type
-                if msg_type == "function" {
-                    if let (Some(name), Some(params)) = (
-                        json.get("name").and_then(|v| v.as_str()),
-                        json.get("parameters"),
-                    ) {
-                        log::info!("[PARSE] Converted native function call format: {}", name);
-                        return Some(AgentResponse {
-                            body: format!("Executing {}...", name),
-                            tool_call: Some(TextToolCall {
-                                tool_name: name.to_string(),
-                                tool_params: params.clone(),
-                            }),
-                        });
-                    }
-                }
-            }
-        }
-
-        // Try to extract JSON from markdown code blocks
-        let json_patterns = [
-            // ```json ... ```
-            regex::Regex::new(r"```(?:json)?\s*\n?([\s\S]*?)\n?```").ok()?,
-        ];
-
-        for pattern in &json_patterns {
-            if let Some(captures) = pattern.captures(content) {
-                if let Some(json_match) = captures.get(1) {
-                    let json_str = json_match.as_str().trim();
-                    if let Ok(response) = serde_json::from_str::<AgentResponse>(json_str) {
-                        return Some(response);
-                    }
-                    // Also try typed JSON format in code blocks
-                    if let Ok(json) = serde_json::from_str::<Value>(json_str) {
-                        if let Some(msg_type) = json.get("type").and_then(|v| v.as_str()) {
-                            // Handle message type
-                            if msg_type == "message" {
-                                if let Some(content_str) = json.get("content").and_then(|v| v.as_str()) {
-                                    return Some(AgentResponse {
-                                        body: content_str.to_string(),
-                                        tool_call: None,
-                                    });
-                                }
-                            }
-                            // Handle function type
-                            if msg_type == "function" {
-                                if let (Some(name), Some(params)) = (
-                                    json.get("name").and_then(|v| v.as_str()),
-                                    json.get("parameters"),
-                                ) {
-                                    return Some(AgentResponse {
-                                        body: format!("Executing {}...", name),
-                                        tool_call: Some(TextToolCall {
-                                            tool_name: name.to_string(),
-                                            tool_params: params.clone(),
-                                        }),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Try to find JSON object anywhere in the content
-        if let Some(start) = content.find('{') {
-            // Find matching closing brace
-            let mut depth = 0;
-            let mut end = start;
-            for (i, c) in content[start..].char_indices() {
-                match c {
-                    '{' => depth += 1,
-                    '}' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            end = start + i + 1;
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if end > start {
-                let json_str = &content[start..end];
-                if let Ok(response) = serde_json::from_str::<AgentResponse>(json_str) {
-                    return Some(response);
-                }
-                // Also try typed JSON format
-                if let Ok(json) = serde_json::from_str::<Value>(json_str) {
-                    if let Some(msg_type) = json.get("type").and_then(|v| v.as_str()) {
-                        // Handle message type
-                        if msg_type == "message" {
-                            if let Some(content_str) = json.get("content").and_then(|v| v.as_str()) {
-                                return Some(AgentResponse {
-                                    body: content_str.to_string(),
-                                    tool_call: None,
-                                });
-                            }
-                        }
-                        // Handle function type
-                        if msg_type == "function" {
-                            if let (Some(name), Some(params)) = (
-                                json.get("name").and_then(|v| v.as_str()),
-                                json.get("parameters"),
-                            ) {
-                                return Some(AgentResponse {
-                                    body: format!("Executing {}...", name),
-                                    tool_call: Some(TextToolCall {
-                                        tool_name: name.to_string(),
-                                        tool_params: params.clone(),
-                                    }),
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // If all parsing fails, treat the whole content as body with no tool call
-        log::debug!("[PARSE] Could not extract JSON, treating as plain text response");
-        Some(AgentResponse {
-            body: content.to_string(),
-            tool_call: None,
-        })
-    }
-
     /// Execute a list of tool calls and return responses (for native tool calling)
-    #[allow(dead_code)]
     async fn execute_tool_calls(
         &self,
         tool_calls: &[ToolCall],
@@ -880,12 +861,13 @@ impl MessageDispatcher {
         None
     }
 
-    /// Build the system prompt with context from memories, tools, and skills
+    /// Build the base system prompt with context from memories and user info
+    /// Note: Tool-related instructions are added by the archetype's enhance_system_prompt
     fn build_system_prompt(
         &self,
         message: &NormalizedMessage,
         identity_id: &str,
-        tool_config: &ToolConfig,
+        _tool_config: &ToolConfig,
     ) -> String {
         let mut prompt = String::new();
 
@@ -895,106 +877,6 @@ impl MessageDispatcher {
             prompt.push_str("\n\n");
         } else {
             prompt.push_str("You are StarkBot, an AI agent who can respond to users and operate tools.\n\n");
-        }
-
-        // Add JSON response format instruction
-        prompt.push_str("## RESPONSE FORMAT (CRITICAL)\n\n");
-        prompt.push_str("You MUST respond in this JSON format:\n");
-        prompt.push_str("```\n");
-        prompt.push_str("{\"body\": \"your message\", \"tool_call\": null}\n");
-        prompt.push_str("```\n\n");
-        prompt.push_str("To call a tool:\n");
-        prompt.push_str("```\n");
-        prompt.push_str("{\"body\": \"brief status\", \"tool_call\": {\"tool_name\": \"name\", \"tool_params\": {...}}}\n");
-        prompt.push_str("```\n\n");
-
-        // Build tools array in OpenAI schema format
-        let tools = self.tool_registry.get_tool_definitions(tool_config);
-        let skills = self.db.list_enabled_skills().unwrap_or_default();
-        let active_skills: Vec<_> = skills.iter().filter(|s| s.enabled).collect();
-
-        if !tools.is_empty() || !active_skills.is_empty() {
-            prompt.push_str("## AVAILABLE TOOLS\n\n");
-            prompt.push_str("```json\n");
-            prompt.push_str("[\n");
-
-            let mut tool_entries: Vec<String> = Vec::new();
-
-            // Add regular tools
-            for tool in &tools {
-                let tool_json = serde_json::json!({
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.input_schema
-                    }
-                });
-                tool_entries.push(serde_json::to_string_pretty(&tool_json).unwrap_or_default());
-            }
-
-            // Add skills as a special tool with nested skill options
-            if !active_skills.is_empty() {
-                let skill_names: Vec<&str> = active_skills.iter().map(|s| s.name.as_str()).collect();
-                let skill_descriptions: Vec<String> = active_skills.iter()
-                    .map(|s| format!("{}: {}", s.name, s.description))
-                    .collect();
-
-                let skills_tool = serde_json::json!({
-                    "type": "function",
-                    "function": {
-                        "name": "use_skill",
-                        "description": format!("Execute a skill. Available skills: {}", skill_descriptions.join("; ")),
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "skill_name": {
-                                    "type": "string",
-                                    "enum": skill_names,
-                                    "description": "The skill to execute"
-                                },
-                                "input": {
-                                    "type": "string",
-                                    "description": "Input or query for the skill"
-                                }
-                            },
-                            "required": ["skill_name", "input"]
-                        }
-                    }
-                });
-                tool_entries.push(serde_json::to_string_pretty(&skills_tool).unwrap_or_default());
-            }
-
-            prompt.push_str(&tool_entries.join(",\n"));
-            prompt.push_str("\n]\n```\n\n");
-
-            // Add usage examples
-            prompt.push_str("## EXAMPLES\n\n");
-            prompt.push_str("Weather query:\n");
-            prompt.push_str("```\n{\"body\": \"Checking...\", \"tool_call\": {\"tool_name\": \"exec\", \"tool_params\": {\"command\": \"curl -s 'wttr.in/Ohio?format=3'\"}}}\n```\n\n");
-
-            prompt.push_str("Web search:\n");
-            prompt.push_str("```\n{\"body\": \"Searching...\", \"tool_call\": {\"tool_name\": \"web_search\", \"tool_params\": {\"query\": \"latest news\"}}}\n```\n\n");
-
-            if !active_skills.is_empty() {
-                prompt.push_str("Using a skill:\n");
-                prompt.push_str(&format!(
-                    "```\n{{\"body\": \"Using skill...\", \"tool_call\": {{\"tool_name\": \"use_skill\", \"tool_params\": {{\"skill_name\": \"{}\", \"input\": \"your query\"}}}}}}\n```\n\n",
-                    active_skills.first().map(|s| s.name.as_str()).unwrap_or("weather")
-                ));
-            }
-
-            prompt.push_str("**IMPORTANT**: For weather, news, or live data - USE TOOLS IMMEDIATELY. Do not say you cannot access real-time data.\n\n");
-        }
-
-        // Add available skills (name + description only - full body provided when use_skill is called)
-        if !active_skills.is_empty() {
-            prompt.push_str("## AVAILABLE SKILLS\n\n");
-            prompt.push_str("Use the `use_skill` tool to activate a skill. The skill instructions will be provided when activated.\n\n");
-            for skill in &active_skills {
-                prompt.push_str(&format!("- **{}**: {}\n", skill.name, skill.description));
-            }
-            prompt.push_str("\n");
         }
 
         // Add daily logs context

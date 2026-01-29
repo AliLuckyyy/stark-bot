@@ -6,17 +6,12 @@ import Input from '@/components/ui/Input';
 import { getAgentSettings, updateAgentSettings } from '@/lib/api';
 
 const ENDPOINTS = {
-  llama: 'https://llama.defirelay.com/api/v1/chat/completions',
   kimi: 'https://kimi.defirelay.com/api/v1/chat/completions',
+  llama: 'https://llama.defirelay.com/api/v1/chat/completions',
 };
 
-const DEFAULT_MODELS: Record<string, string> = {
-  llama: 'default',
-  kimi: 'default',
-};
-
-type EndpointOption = 'llama' | 'kimi' | 'custom';
-type ModelArchetype = 'llama' | 'kimi' | 'anthropic' | 'openai';
+type EndpointOption = 'kimi' | 'llama' | 'custom';
+type ModelArchetype = 'kimi' | 'llama' | 'claude' | 'openai';
 
 interface Settings {
   endpoint?: string;
@@ -25,9 +20,9 @@ interface Settings {
 }
 
 export default function AgentSettings() {
-  const [endpointOption, setEndpointOption] = useState<EndpointOption>('llama');
+  const [endpointOption, setEndpointOption] = useState<EndpointOption>('kimi');
   const [customEndpoint, setCustomEndpoint] = useState('');
-  const [modelArchetype, setModelArchetype] = useState<ModelArchetype>('llama');
+  const [modelArchetype, setModelArchetype] = useState<ModelArchetype>('kimi');
   const [maxTokens, setMaxTokens] = useState(40000);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -37,24 +32,36 @@ export default function AgentSettings() {
     loadSettings();
   }, []);
 
+  // Lock archetype for known endpoints
+  useEffect(() => {
+    if (endpointOption === 'kimi') {
+      setModelArchetype('kimi');
+    } else if (endpointOption === 'llama') {
+      setModelArchetype('llama');
+    }
+  }, [endpointOption]);
+
+  // Archetype is only selectable for custom endpoints
+  const isArchetypeLocked = endpointOption !== 'custom';
+
   const loadSettings = async () => {
     try {
       const data = await getAgentSettings() as Settings;
 
       // Determine which endpoint option is being used
-      if (data.endpoint === ENDPOINTS.llama) {
-        setEndpointOption('llama');
-      } else if (data.endpoint === ENDPOINTS.kimi) {
+      if (data.endpoint === ENDPOINTS.kimi) {
         setEndpointOption('kimi');
+      } else if (data.endpoint === ENDPOINTS.llama) {
+        setEndpointOption('llama');
       } else if (data.endpoint) {
         setEndpointOption('custom');
         setCustomEndpoint(data.endpoint);
       } else {
-        setEndpointOption('llama');
+        setEndpointOption('kimi');
       }
 
       // Set model archetype
-      if (data.model_archetype && ['llama', 'kimi', 'anthropic', 'openai'].includes(data.model_archetype)) {
+      if (data.model_archetype && ['kimi', 'llama', 'claude', 'openai'].includes(data.model_archetype)) {
         setModelArchetype(data.model_archetype as ModelArchetype);
       }
 
@@ -75,10 +82,10 @@ export default function AgentSettings() {
     setMessage(null);
 
     let endpoint: string;
-    if (endpointOption === 'llama') {
-      endpoint = ENDPOINTS.llama;
-    } else if (endpointOption === 'kimi') {
+    if (endpointOption === 'kimi') {
       endpoint = ENDPOINTS.kimi;
+    } else if (endpointOption === 'llama') {
+      endpoint = ENDPOINTS.llama;
     } else {
       endpoint = customEndpoint;
     }
@@ -90,19 +97,15 @@ export default function AgentSettings() {
     }
 
     try {
-      // Use default model for known endpoints, empty for custom
-      const model = endpointOption === 'custom' ? '' : (DEFAULT_MODELS[endpointOption] || '');
-
-      // Map endpoint option to provider
-      const provider = endpointOption === 'custom' ? 'openai_compatible' : endpointOption;
+      // Enforce archetype for known endpoints
+      const archetype = endpointOption === 'kimi' ? 'kimi'
+        : endpointOption === 'llama' ? 'llama'
+        : modelArchetype;
 
       await updateAgentSettings({
         endpoint,
-        model_archetype: modelArchetype,
+        model_archetype: archetype,
         max_tokens: maxTokens,
-        provider,
-        api_key: '',
-        model,
       });
       setMessage({ type: 'success', text: 'Settings saved successfully' });
     } catch (err) {
@@ -146,8 +149,8 @@ export default function AgentSettings() {
                   onChange={(e) => setEndpointOption(e.target.value as EndpointOption)}
                   className="w-full px-4 py-3 bg-slate-900/50 border border-slate-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-stark-500 focus:border-transparent"
                 >
-                  <option value="llama">llama.defirelay.com</option>
                   <option value="kimi">kimi.defirelay.com</option>
+                  <option value="llama">llama.defirelay.com</option>
                   <option value="custom">Custom Endpoint</option>
                 </select>
               </div>
@@ -168,15 +171,18 @@ export default function AgentSettings() {
                 <select
                   value={modelArchetype}
                   onChange={(e) => setModelArchetype(e.target.value as ModelArchetype)}
-                  className="w-full px-4 py-3 bg-slate-900/50 border border-slate-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-stark-500 focus:border-transparent"
+                  disabled={isArchetypeLocked}
+                  className={`w-full px-4 py-3 bg-slate-900/50 border border-slate-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-stark-500 focus:border-transparent ${isArchetypeLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
                 >
-                  <option value="llama">Llama</option>
                   <option value="kimi">Kimi</option>
-                  <option value="anthropic">Anthropic</option>
+                  <option value="llama">Llama</option>
+                  <option value="claude">Claude</option>
                   <option value="openai">OpenAI</option>
                 </select>
                 <p className="text-xs text-slate-500 mt-1">
-                  Select the model family to optimize prompt formatting
+                  {isArchetypeLocked
+                    ? `Locked to ${modelArchetype} for this endpoint`
+                    : 'Select the model family to optimize prompt formatting'}
                 </p>
               </div>
 

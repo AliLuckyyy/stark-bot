@@ -1,3 +1,4 @@
+pub mod archetypes;
 pub mod claude;
 pub mod llama;
 pub mod openai;
@@ -6,6 +7,7 @@ pub mod types;
 pub use claude::ClaudeClient;
 pub use llama::{LlamaClient, LlamaMessage};
 pub use openai::OpenAIClient;
+pub use archetypes::{ArchetypeId, ArchetypeRegistry, ModelArchetype};
 pub use types::{
     AiResponse, ClaudeMessage as TypedClaudeMessage, ThinkingLevel, ToolCall, ToolHistoryEntry,
     ToolResponse,
@@ -13,7 +15,7 @@ pub use types::{
 
 use crate::gateway::events::EventBroadcaster;
 use crate::gateway::protocol::GatewayEvent;
-use crate::models::{AgentSettings, AiProvider};
+use crate::models::AgentSettings;
 use crate::tools::ToolDefinition;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -56,48 +58,33 @@ impl AiClient {
     }
 
     /// Create an AI client from agent settings with optional burner wallet for x402
+    ///
+    /// All x402 endpoints use the OpenAI-compatible client.
+    /// The archetype determines model behavior, not the client type.
     pub fn from_settings_with_wallet(
         settings: &AgentSettings,
         burner_private_key: Option<&str>,
     ) -> Result<Self, String> {
-        let provider = settings.provider_enum().ok_or_else(|| {
-            format!("Unknown provider: {}", settings.provider)
-        })?;
+        // Get archetype to determine default model
+        let archetype_id = Self::infer_archetype(settings);
+        let registry = ArchetypeRegistry::new();
+        let archetype = registry.get(archetype_id).unwrap_or_else(|| registry.default_archetype());
+        let model = archetype.default_model();
 
-        match provider {
-            AiProvider::Claude => {
-                let client = ClaudeClient::new(
-                    &settings.api_key,
-                    Some(&settings.endpoint),
-                    Some(&settings.model),
-                )?;
-                Ok(AiClient::Claude(client))
-            }
-            AiProvider::OpenAI | AiProvider::OpenAICompatible | AiProvider::Kimi => {
-                // OpenAI, OpenAI-compatible, and Kimi all use the same client
-                // The endpoint from settings is always used
-                let client = OpenAIClient::new_with_x402_and_tokens(
-                    &settings.api_key,
-                    Some(&settings.endpoint),
-                    Some(&settings.model),
-                    burner_private_key,
-                    Some(settings.max_tokens as u32),
-                )?;
-                Ok(AiClient::OpenAI(client))
-            }
-            AiProvider::Llama => {
-                // Llama endpoints may also use x402 (like llama.defirelay.com)
-                // Use OpenAI-compatible client for x402 support
-                let client = OpenAIClient::new_with_x402_and_tokens(
-                    "",  // No API key needed for llama endpoints
-                    Some(&settings.endpoint),
-                    Some(&settings.model),
-                    burner_private_key,
-                    Some(settings.max_tokens as u32),
-                )?;
-                Ok(AiClient::OpenAI(client))
-            }
-        }
+        // All x402 endpoints use OpenAI-compatible client
+        let client = OpenAIClient::new_with_x402_and_tokens(
+            "",  // No API key needed for x402 endpoints
+            Some(&settings.endpoint),
+            Some(model),
+            burner_private_key,
+            Some(settings.max_tokens as u32),
+        )?;
+        Ok(AiClient::OpenAI(client))
+    }
+
+    /// Get the archetype ID from agent settings
+    pub fn infer_archetype(settings: &AgentSettings) -> ArchetypeId {
+        ArchetypeId::from_str(&settings.model_archetype).unwrap_or(ArchetypeId::Kimi)
     }
 
     /// Generate text using the configured provider

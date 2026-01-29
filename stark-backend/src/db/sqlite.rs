@@ -103,16 +103,25 @@ impl Database {
             [],
         )?;
 
-        // Agent settings table (AI provider configuration)
+        // Agent settings table (AI endpoint configuration - simplified for x402)
+        // Note: provider, api_key, model columns are deprecated (kept for migration compatibility)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS agent_settings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                provider TEXT NOT NULL,
                 endpoint TEXT NOT NULL,
-                api_key TEXT NOT NULL,
-                model TEXT NOT NULL,
-                model_archetype TEXT,
+                model_archetype TEXT NOT NULL DEFAULT 'kimi',
+                max_tokens INTEGER NOT NULL DEFAULT 40000,
                 enabled INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        // Bot settings table (git commit author info, etc.)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS bot_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 bot_name TEXT NOT NULL DEFAULT 'StarkBot',
                 bot_email TEXT NOT NULL DEFAULT 'starkbot@users.noreply.github.com',
                 created_at TEXT NOT NULL,
@@ -121,7 +130,7 @@ impl Database {
             [],
         )?;
 
-        // Migration: Add model_archetype column if it doesn't exist
+        // Migration: Add model_archetype column if it doesn't exist (for old DBs)
         let has_model_archetype: bool = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('agent_settings') WHERE name='model_archetype'",
@@ -132,10 +141,10 @@ impl Database {
             .unwrap_or(false);
 
         if !has_model_archetype {
-            conn.execute("ALTER TABLE agent_settings ADD COLUMN model_archetype TEXT", [])?;
+            conn.execute("ALTER TABLE agent_settings ADD COLUMN model_archetype TEXT DEFAULT 'kimi'", [])?;
         }
 
-        // Migration: Add max_tokens column if it doesn't exist
+        // Migration: Add max_tokens column if it doesn't exist (for old DBs)
         let has_max_tokens: bool = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('agent_settings') WHERE name='max_tokens'",
@@ -147,6 +156,19 @@ impl Database {
 
         if !has_max_tokens {
             conn.execute("ALTER TABLE agent_settings ADD COLUMN max_tokens INTEGER DEFAULT 40000", [])?;
+        }
+
+        // Initialize bot_settings with defaults if empty
+        let bot_settings_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM bot_settings", [], |row| row.get(0))
+            .unwrap_or(0);
+
+        if bot_settings_count == 0 {
+            let now = chrono::Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO bot_settings (bot_name, bot_email, created_at, updated_at) VALUES ('StarkBot', 'starkbot@users.noreply.github.com', ?1, ?2)",
+                [&now, &now],
+            )?;
         }
 
         // Chat sessions table - conversation context containers
@@ -466,8 +488,9 @@ impl Database {
             [],
         )?;
 
+            //this is an anti pattern ! 
         // Seed default Kimi agent if no agents exist
-        let agent_count: i64 = conn
+       /* let agent_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM agent_settings",
                 [],
@@ -483,7 +506,7 @@ impl Database {
                 [&now, &now],
             )?;
             log::info!("Seeded default Kimi agent");
-        }
+        }*/
 
         Ok(())
     }

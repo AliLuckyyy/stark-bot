@@ -1,5 +1,6 @@
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
-use crate::models::{AgentSettingsResponse, AiProvider, UpdateAgentSettingsRequest};
+use crate::ai::ArchetypeId;
+use crate::models::{AgentSettingsResponse, UpdateAgentSettingsRequest, UpdateBotSettingsRequest};
 use crate::AppState;
 
 /// Validate session token from request
@@ -36,7 +37,7 @@ fn validate_session_from_request(
     }
 }
 
-/// Get current agent settings (active provider)
+/// Get current agent settings (active endpoint)
 pub async fn get_agent_settings(
     state: web::Data<AppState>,
     req: HttpRequest,
@@ -52,7 +53,7 @@ pub async fn get_agent_settings(
         Ok(None) => {
             HttpResponse::Ok().json(serde_json::json!({
                 "configured": false,
-                "message": "No AI provider configured"
+                "message": "No AI endpoint configured"
             }))
         }
         Err(e) => {
@@ -64,7 +65,7 @@ pub async fn get_agent_settings(
     }
 }
 
-/// List all configured providers
+/// List all configured endpoints
 pub async fn list_agent_settings(
     state: web::Data<AppState>,
     req: HttpRequest,
@@ -89,45 +90,45 @@ pub async fn list_agent_settings(
     }
 }
 
-/// Get available providers with defaults
-pub async fn get_available_providers(
+/// Get available archetypes with descriptions
+pub async fn get_available_archetypes(
     state: web::Data<AppState>,
     req: HttpRequest,
 ) -> impl Responder {
     if let Err(resp) = validate_session_from_request(&state, &req) {
         return resp;
     }
-    let providers = vec![
+    let archetypes = vec![
         serde_json::json!({
-            "id": "claude",
-            "name": "Claude (Anthropic)",
-            "placeholder_endpoint": AiProvider::Claude.placeholder_endpoint(),
-            "placeholder_model": AiProvider::Claude.placeholder_model(),
-        }),
-        serde_json::json!({
-            "id": "openai",
-            "name": "OpenAI",
-            "placeholder_endpoint": AiProvider::OpenAI.placeholder_endpoint(),
-            "placeholder_model": AiProvider::OpenAI.placeholder_model(),
-        }),
-        serde_json::json!({
-            "id": "openai_compatible",
-            "name": "OpenAI Compatible (DigitalOcean, Azure, etc.)",
-            "placeholder_endpoint": AiProvider::OpenAICompatible.placeholder_endpoint(),
-            "placeholder_model": AiProvider::OpenAICompatible.placeholder_model(),
+            "id": "kimi",
+            "name": "Kimi (Native Tool Calling)",
+            "description": "OpenAI-compatible native tool calling. Best for Kimi, OpenAI, and similar endpoints.",
+            "uses_native_tools": true,
         }),
         serde_json::json!({
             "id": "llama",
-            "name": "Llama (Ollama)",
-            "placeholder_endpoint": AiProvider::Llama.placeholder_endpoint(),
-            "placeholder_model": AiProvider::Llama.placeholder_model(),
+            "name": "Llama (Text-based Tool Calling)",
+            "description": "JSON-based tool calling via text. Best for generic Llama endpoints.",
+            "uses_native_tools": false,
+        }),
+        serde_json::json!({
+            "id": "claude",
+            "name": "Claude (Native Tool Calling)",
+            "description": "Anthropic Claude native tool calling.",
+            "uses_native_tools": true,
+        }),
+        serde_json::json!({
+            "id": "openai",
+            "name": "OpenAI (Native Tool Calling)",
+            "description": "OpenAI native tool calling. Same as Kimi.",
+            "uses_native_tools": true,
         }),
     ];
 
-    HttpResponse::Ok().json(providers)
+    HttpResponse::Ok().json(archetypes)
 }
 
-/// Update agent settings (set active provider)
+/// Update agent settings (set active endpoint)
 pub async fn update_agent_settings(
     state: web::Data<AppState>,
     req: HttpRequest,
@@ -138,16 +139,6 @@ pub async fn update_agent_settings(
     }
     let request = body.into_inner();
 
-    // Validate provider
-    let _provider = match AiProvider::from_str(&request.provider) {
-        Some(p) => p,
-        None => {
-            return HttpResponse::BadRequest().json(serde_json::json!({
-                "error": format!("Invalid provider: {}. Must be claude, openai, openai_compatible, llama, or kimi.", request.provider)
-            }));
-        }
-    };
-
     // Validate endpoint
     if request.endpoint.is_empty() {
         return HttpResponse::BadRequest().json(serde_json::json!({
@@ -155,27 +146,24 @@ pub async fn update_agent_settings(
         }));
     }
 
-    // API key is now optional (llama.defirelay.com doesn't need it)
-    let api_key = request.api_key.clone();
-
-    // Model is optional - use provided or empty string (some endpoints auto-select)
-    let model = request.model.clone().unwrap_or_default();
-
-    // Model archetype for prompt formatting
-    let model_archetype = request.model_archetype.as_deref();
+    // Validate archetype
+    if ArchetypeId::from_str(&request.model_archetype).is_none() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": format!("Invalid archetype: {}. Must be kimi, llama, claude, or openai.", request.model_archetype)
+        }));
+    }
 
     // Save settings
     log::info!(
-        "Saving agent settings: provider={}, endpoint={}, model_archetype={:?}, max_tokens={}",
-        request.provider,
+        "Saving agent settings: endpoint={}, archetype={}, max_tokens={}",
         request.endpoint,
-        model_archetype,
+        request.model_archetype,
         request.max_tokens
     );
 
-    match state.db.save_agent_settings(&request.provider, &request.endpoint, &api_key, &model, model_archetype, request.max_tokens) {
+    match state.db.save_agent_settings(&request.endpoint, &request.model_archetype, request.max_tokens) {
         Ok(settings) => {
-            log::info!("Updated agent settings to use {} provider", request.provider);
+            log::info!("Updated agent settings to use {} endpoint with {} archetype", request.endpoint, request.model_archetype);
             let response: AgentSettingsResponse = settings.into();
             HttpResponse::Ok().json(response)
         }
@@ -188,7 +176,7 @@ pub async fn update_agent_settings(
     }
 }
 
-/// Disable agent (set no active provider)
+/// Disable agent (set no active endpoint)
 pub async fn disable_agent(
     state: web::Data<AppState>,
     req: HttpRequest,
@@ -213,6 +201,53 @@ pub async fn disable_agent(
     }
 }
 
+/// Get bot settings
+pub async fn get_bot_settings(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    if let Err(resp) = validate_session_from_request(&state, &req) {
+        return resp;
+    }
+    match state.db.get_bot_settings() {
+        Ok(settings) => HttpResponse::Ok().json(settings),
+        Err(e) => {
+            log::error!("Failed to get bot settings: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Database error: {}", e)
+            }))
+        }
+    }
+}
+
+/// Update bot settings
+pub async fn update_bot_settings(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    body: web::Json<UpdateBotSettingsRequest>,
+) -> impl Responder {
+    if let Err(resp) = validate_session_from_request(&state, &req) {
+        return resp;
+    }
+    let request = body.into_inner();
+
+    match state.db.update_bot_settings(
+        request.bot_name.as_deref(),
+        request.bot_email.as_deref(),
+    ) {
+        Ok(settings) => {
+            log::info!("Updated bot settings: name={}, email={}", settings.bot_name, settings.bot_email);
+            HttpResponse::Ok().json(settings)
+        }
+        Err(e) => {
+            log::error!("Failed to update bot settings: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Database error: {}", e)
+            }))
+        }
+    }
+}
+
 /// Configure routes
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
@@ -220,7 +255,12 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("", web::get().to(get_agent_settings))
             .route("", web::put().to(update_agent_settings))
             .route("/list", web::get().to(list_agent_settings))
-            .route("/providers", web::get().to(get_available_providers))
+            .route("/archetypes", web::get().to(get_available_archetypes))
             .route("/disable", web::post().to(disable_agent))
+    );
+    cfg.service(
+        web::scope("/api/bot-settings")
+            .route("", web::get().to(get_bot_settings))
+            .route("", web::put().to(update_bot_settings))
     );
 }

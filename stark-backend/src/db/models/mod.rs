@@ -6,6 +6,7 @@ mod auth;           // auth_sessions, auth_challenges
 mod api_keys;       // external_api_keys
 mod channels;       // external_channels
 mod agent_settings; // agent_settings
+mod bot_settings;   // bot_settings
 mod chat_sessions;  // chat_sessions, session_messages (+ compaction)
 mod identities;     // identity_links
 mod memories;       // memories
