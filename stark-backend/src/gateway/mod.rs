@@ -33,11 +33,21 @@ impl Gateway {
 
     /// Create a new Gateway with tool registry support
     pub fn new_with_tools(db: Arc<Database>, tool_registry: Arc<ToolRegistry>) -> Self {
+        Self::new_with_tools_and_wallet(db, tool_registry, None)
+    }
+
+    /// Create a new Gateway with tool registry and wallet support for x402 payments
+    pub fn new_with_tools_and_wallet(
+        db: Arc<Database>,
+        tool_registry: Arc<ToolRegistry>,
+        burner_wallet_private_key: Option<String>,
+    ) -> Self {
         let broadcaster = Arc::new(EventBroadcaster::new());
-        let channel_manager = Arc::new(ChannelManager::new_with_tools(
+        let channel_manager = Arc::new(ChannelManager::new_with_tools_and_wallet(
             db.clone(),
             broadcaster.clone(),
             tool_registry,
+            burner_wallet_private_key,
         ));
 
         Self {

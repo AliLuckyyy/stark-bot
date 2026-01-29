@@ -24,6 +24,7 @@ pub struct ChannelManager {
     running_channels: Arc<DashMap<i64, ChannelHandle>>,
     tool_registry: Option<Arc<ToolRegistry>>,
     execution_tracker: Arc<ExecutionTracker>,
+    burner_wallet_private_key: Option<String>,
 }
 
 impl ChannelManager {
@@ -35,6 +36,7 @@ impl ChannelManager {
             running_channels: Arc::new(DashMap::new()),
             tool_registry: None,
             execution_tracker,
+            burner_wallet_private_key: None,
         }
     }
 
@@ -43,6 +45,15 @@ impl ChannelManager {
         broadcaster: Arc<EventBroadcaster>,
         tool_registry: Arc<ToolRegistry>,
     ) -> Self {
+        Self::new_with_tools_and_wallet(db, broadcaster, tool_registry, None)
+    }
+
+    pub fn new_with_tools_and_wallet(
+        db: Arc<Database>,
+        broadcaster: Arc<EventBroadcaster>,
+        tool_registry: Arc<ToolRegistry>,
+        burner_wallet_private_key: Option<String>,
+    ) -> Self {
         let execution_tracker = Arc::new(ExecutionTracker::new(broadcaster.clone()));
         Self {
             db,
@@ -50,6 +61,7 @@ impl ChannelManager {
             running_channels: Arc::new(DashMap::new()),
             tool_registry: Some(tool_registry),
             execution_tracker,
+            burner_wallet_private_key,
         }
     }
 
@@ -77,13 +89,14 @@ impl ChannelManager {
         // Create shutdown channel
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-        // Create dispatcher with or without tools
+        // Create dispatcher with or without tools (and wallet for x402 payment support)
         let dispatcher = if let Some(ref tool_registry) = self.tool_registry {
-            Arc::new(MessageDispatcher::new(
+            Arc::new(MessageDispatcher::new_with_wallet(
                 self.db.clone(),
                 self.broadcaster.clone(),
                 tool_registry.clone(),
                 self.execution_tracker.clone(),
+                self.burner_wallet_private_key.clone(),
             ))
         } else {
             Arc::new(MessageDispatcher::new_without_tools(

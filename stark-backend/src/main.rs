@@ -69,9 +69,13 @@ async fn main() -> std::io::Result<()> {
     });
     log::info!("Loaded {} skills from disk, {} total in database", skill_count, skill_registry.len());
 
-    // Initialize Gateway with tool registry
+    // Initialize Gateway with tool registry and wallet for x402 payment support
     log::info!("Initializing Gateway");
-    let gateway = Arc::new(Gateway::new_with_tools(db.clone(), tool_registry.clone()));
+    let gateway = Arc::new(Gateway::new_with_tools_and_wallet(
+        db.clone(),
+        tool_registry.clone(),
+        config.burner_wallet_private_key.clone(),
+    ));
 
     // Initialize Execution Tracker for progress display
     log::info!("Initializing execution tracker");
