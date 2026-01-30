@@ -24,7 +24,7 @@ impl GitTool {
             "operation".to_string(),
             PropertySchema {
                 schema_type: "string".to_string(),
-                description: "Git operation: status, diff, log, add, commit, branch, checkout, stash, reset".to_string(),
+                description: "Git operation: status, diff, log, add, commit, branch, checkout, stash, reset, push, pull, fetch, clone, remote".to_string(),
                 default: None,
                 items: None,
                 enum_values: Some(vec![
@@ -37,7 +37,56 @@ impl GitTool {
                     "checkout".to_string(),
                     "stash".to_string(),
                     "reset".to_string(),
+                    "push".to_string(),
+                    "pull".to_string(),
+                    "fetch".to_string(),
+                    "clone".to_string(),
+                    "remote".to_string(),
                 ]),
+            },
+        );
+
+        properties.insert(
+            "remote".to_string(),
+            PropertySchema {
+                schema_type: "string".to_string(),
+                description: "Remote name for push/pull/fetch (default: origin)".to_string(),
+                default: Some(json!("origin")),
+                items: None,
+                enum_values: None,
+            },
+        );
+
+        properties.insert(
+            "url".to_string(),
+            PropertySchema {
+                schema_type: "string".to_string(),
+                description: "Repository URL for clone operation".to_string(),
+                default: None,
+                items: None,
+                enum_values: None,
+            },
+        );
+
+        properties.insert(
+            "force".to_string(),
+            PropertySchema {
+                schema_type: "boolean".to_string(),
+                description: "Force operation (DANGEROUS for push - uses --force-with-lease for safety)".to_string(),
+                default: Some(json!(false)),
+                items: None,
+                enum_values: None,
+            },
+        );
+
+        properties.insert(
+            "set_upstream".to_string(),
+            PropertySchema {
+                schema_type: "boolean".to_string(),
+                description: "Set upstream tracking on push (default: true)".to_string(),
+                default: Some(json!(true)),
+                items: None,
+                enum_values: None,
             },
         );
 
@@ -116,7 +165,7 @@ impl GitTool {
         GitTool {
             definition: ToolDefinition {
                 name: "git".to_string(),
-                description: "Execute git operations safely. Supports: status, diff, log, add, commit, branch, checkout, stash, reset. Protected branches (main, master) have safety restrictions.".to_string(),
+                description: "Execute git operations safely. Supports: status, diff, log, add, commit, branch, checkout, stash, reset, push, pull, fetch, clone, remote. Protected branches (main, master) have safety restrictions - force push is forbidden. For safer commits with secret detection, use the 'committer' tool instead.".to_string(),
                 input_schema: ToolInputSchema {
                     schema_type: "object".to_string(),
                     properties,
@@ -195,6 +244,10 @@ struct GitParams {
     count: Option<usize>,
     staged: Option<bool>,
     create: Option<bool>,
+    remote: Option<String>,
+    url: Option<String>,
+    force: Option<bool>,
+    set_upstream: Option<bool>,
 }
 
 #[async_trait]
@@ -438,8 +491,193 @@ impl Tool for GitTool {
                 }
             }
 
+            "push" => {
+                let remote = params.remote.as_deref().unwrap_or("origin");
+                let force = params.force.unwrap_or(false);
+                let set_upstream = params.set_upstream.unwrap_or(true);
+
+                // Get current branch if not specified
+                let branch = match &params.branch {
+                    Some(b) => b.clone(),
+                    None => {
+                        match self.run_git(&["branch", "--show-current"], &workspace, context).await {
+                            Ok(b) => b.trim().to_string(),
+                            Err(e) => return ToolResult::error(format!("Failed to get current branch: {}", e)),
+                        }
+                    }
+                };
+
+                // SAFETY: Never allow force push to protected branches
+                if force && Self::is_protected_branch(&branch) {
+                    return ToolResult::error(format!(
+                        "SAFETY: Force push to protected branch '{}' is FORBIDDEN. This could destroy commit history and affect other developers.",
+                        branch
+                    ));
+                }
+
+                // Check for uncommitted changes
+                match self.run_git(&["status", "--porcelain"], &workspace, context).await {
+                    Ok(output) if !output.is_empty() => {
+                        return ToolResult::error(
+                            "Uncommitted changes detected. Please commit or stash changes before pushing."
+                        );
+                    }
+                    Err(e) => return ToolResult::error(format!("Failed to check status: {}", e)),
+                    _ => {}
+                }
+
+                let mut args = vec!["push"];
+                if set_upstream {
+                    args.push("-u");
+                }
+                if force {
+                    // Use --force-with-lease instead of --force for safety
+                    // This prevents overwriting commits that others have pushed
+                    args.push("--force-with-lease");
+                }
+                args.push(remote);
+                args.push(&branch);
+
+                match self.run_git(&args, &workspace, context).await {
+                    Ok(output) => {
+                        let result = if output.is_empty() {
+                            format!("Pushed branch '{}' to {}/{}", branch, remote, branch)
+                        } else {
+                            format!("Pushed to {}/{}:\n{}", remote, branch, output)
+                        };
+                        ToolResult::success(result)
+                    }
+                    Err(e) => ToolResult::error(e),
+                }
+            }
+
+            "pull" => {
+                let remote = params.remote.as_deref().unwrap_or("origin");
+                let branch = match &params.branch {
+                    Some(b) => b.clone(),
+                    None => {
+                        match self.run_git(&["branch", "--show-current"], &workspace, context).await {
+                            Ok(b) => b.trim().to_string(),
+                            Err(e) => return ToolResult::error(format!("Failed to get current branch: {}", e)),
+                        }
+                    }
+                };
+
+                // Use rebase to keep history clean
+                match self.run_git(&["pull", "--rebase", remote, &branch], &workspace, context).await {
+                    Ok(output) => {
+                        if output.contains("Already up to date") {
+                            ToolResult::success("Already up to date.")
+                        } else {
+                            ToolResult::success(format!("Pulled {}/{} with rebase:\n{}", remote, branch, output))
+                        }
+                    }
+                    Err(e) => {
+                        if e.contains("conflict") {
+                            ToolResult::error(format!(
+                                "Merge conflict detected. Please resolve conflicts manually:\n{}\n\nAfter resolving, run: git rebase --continue",
+                                e
+                            ))
+                        } else {
+                            ToolResult::error(e)
+                        }
+                    }
+                }
+            }
+
+            "fetch" => {
+                let remote = params.remote.as_deref().unwrap_or("origin");
+
+                let args = if let Some(branch) = &params.branch {
+                    vec!["fetch", remote, branch]
+                } else {
+                    vec!["fetch", remote, "--prune"]
+                };
+
+                match self.run_git(&args, &workspace, context).await {
+                    Ok(output) => {
+                        let result = if output.is_empty() {
+                            format!("Fetched from {} (no new changes)", remote)
+                        } else {
+                            format!("Fetched from {}:\n{}", remote, output)
+                        };
+                        ToolResult::success(result)
+                    }
+                    Err(e) => ToolResult::error(e),
+                }
+            }
+
+            "clone" => {
+                let url = match &params.url {
+                    Some(u) => u,
+                    None => return ToolResult::error("URL is required for clone operation"),
+                };
+
+                // Extract repo name from URL for the target directory
+                let repo_name = url
+                    .trim_end_matches('/')
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("repo")
+                    .trim_end_matches(".git");
+
+                let target_dir = workspace.join(repo_name);
+
+                if target_dir.exists() {
+                    return ToolResult::error(format!(
+                        "Directory '{}' already exists. Please remove it or use a different location.",
+                        repo_name
+                    ));
+                }
+
+                // Clone with depth 1 by default for faster cloning (can be full cloned later if needed)
+                match self.run_git(&["clone", "--depth", "1", url, repo_name], &workspace, context).await {
+                    Ok(output) => {
+                        ToolResult::success(format!(
+                            "Cloned {} to {}:\n{}\n\nNote: Cloned with --depth 1. Run 'git fetch --unshallow' for full history.",
+                            url, repo_name, output
+                        ))
+                    }
+                    Err(e) => ToolResult::error(e),
+                }
+            }
+
+            "remote" => {
+                // List or manage remotes
+                if let Some(url) = &params.url {
+                    // Add remote
+                    let remote_name = params.remote.as_deref().unwrap_or("origin");
+                    match self.run_git(&["remote", "add", remote_name, url], &workspace, context).await {
+                        Ok(_) => ToolResult::success(format!("Added remote '{}' -> {}", remote_name, url)),
+                        Err(e) => {
+                            // Try to set-url if remote already exists
+                            if e.contains("already exists") {
+                                match self.run_git(&["remote", "set-url", remote_name, url], &workspace, context).await {
+                                    Ok(_) => ToolResult::success(format!("Updated remote '{}' -> {}", remote_name, url)),
+                                    Err(e) => ToolResult::error(e),
+                                }
+                            } else {
+                                ToolResult::error(e)
+                            }
+                        }
+                    }
+                } else {
+                    // List remotes
+                    match self.run_git(&["remote", "-v"], &workspace, context).await {
+                        Ok(output) => {
+                            if output.is_empty() {
+                                ToolResult::success("No remotes configured.")
+                            } else {
+                                ToolResult::success(format!("Remotes:\n{}", output))
+                            }
+                        }
+                        Err(e) => ToolResult::error(e),
+                    }
+                }
+            }
+
             _ => ToolResult::error(format!(
-                "Unknown operation: {}. Supported: status, diff, log, add, commit, branch, checkout, stash, reset",
+                "Unknown operation: {}. Supported: status, diff, log, add, commit, branch, checkout, stash, reset, push, pull, fetch, clone, remote",
                 params.operation
             )),
         }

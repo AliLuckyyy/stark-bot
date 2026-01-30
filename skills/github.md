@@ -1,153 +1,298 @@
 ---
 name: github
-description: "Interact with GitHub using the `gh` CLI. Clone repos, create branches, make changes, and submit PRs."
+description: "Advanced GitHub operations with safe commits, PR creation, deployment, and quality checks."
 homepage: https://cli.github.com/manual/
 metadata: {"requires_auth": true}
 requires_binaries: [git, gh]
-tags: [github, git, pr, version-control]
+tags: [github, git, pr, version-control, deployment, ci-cd]
 ---
 
 # GitHub Operations Guide
 
-You have access to git and gh (GitHub CLI) commands via the exec tool.
-Authentication is handled automatically via the stored GitHub API key.
+You have access to specialized tools for safe and effective GitHub operations:
 
-## IMPORTANT: Workspace Management
+| Tool | Purpose |
+|------|---------|
+| `git` | Basic git operations (status, diff, log, add, commit, branch, checkout, push, pull, fetch, clone) |
+| `committer` | **Safe scoped commits** with secret detection, conventional commit enforcement |
+| `deploy` | **Deployment ops** (push, PR creation, workflow monitoring, merge) |
+| `pr_quality` | **Pre-PR checks** (debug code, TODOs, size validation) |
 
-Before cloning, check if the repo already exists in the workspace:
-```bash
-ls -la repo-name
-```
+## IMPORTANT: Use the Right Tools
 
-**If the repo already exists:**
-```bash
-cd repo-name
-git fetch --all
-git checkout main || git checkout master  # Go to default branch
-git reset --hard origin/main || git reset --hard origin/master  # Reset to remote state
-git clean -fd  # Remove untracked files
-```
+**For commits:** Use `committer` instead of raw `git commit`. It provides:
+- Secret detection (API keys, tokens, passwords)
+- Sensitive file blocking (.env, credentials)
+- Conventional commit enforcement
+- Protected branch protection
 
-**If the repo doesn't exist:** Clone it fresh (see workflows below).
+**For deployment:** Use `deploy` for push/PR/CI operations. It provides:
+- Safety checks before push
+- Automatic PR creation with proper formatting
+- CI/CD workflow monitoring
+- Auto-merge capabilities
 
 ---
 
-## Workflow: Contributing to Someone Else's Repo (Fork Workflow)
+## Workflow: Safe Feature Development
 
-Use this workflow when you DON'T have write access to the repository.
+### 1. Clone/Setup Repository
 
-### 1. Fork and Clone the Repository
-```bash
-gh repo fork owner/repo --clone=true --remote=true
-cd repo
-```
-This creates a fork under your account and clones it locally.
-
-**If repo already exists locally:** Reset it and sync with upstream:
-```bash
-cd repo
-git remote add upstream https://github.com/owner/repo.git 2>/dev/null || true
-git fetch upstream
-git checkout main || git checkout master
-git reset --hard upstream/main || git reset --hard upstream/master
+```json
+{"tool": "git", "operation": "clone", "url": "https://github.com/owner/repo"}
 ```
 
-### 2. Create a Feature Branch (use unique name with timestamp)
-```bash
-git checkout -b feature/change-$(date +%s)
+Or if working in existing workspace:
+```json
+{"tool": "git", "operation": "fetch"}
+{"tool": "git", "operation": "pull"}
+```
+
+### 2. Create Feature Branch
+
+```json
+{"tool": "git", "operation": "checkout", "branch": "feature/my-change", "create": true}
 ```
 
 ### 3. Make Changes
-Use read_file, write_file, and list_files tools to modify the code.
 
-### 4. Commit Changes
-```bash
-git add -A
-git commit -m "Description of changes"
+Use `read_file`, `edit_file`, `write_file` tools to modify code.
+
+### 4. Run Quality Checks
+
+Before committing, check for issues:
+```json
+{"tool": "pr_quality", "operation": "full_check"}
 ```
 
-### 5. Push to Your Fork and Create PR
-```bash
-git push -u origin HEAD
-gh pr create --title "PR Title" --body "Description"
+This detects:
+- Debug code (console.log, println!, dbg!)
+- TODO/FIXME without issue references
+- Files that are too large
+- Overall PR size
+
+### 5. Safe Commit with Committer Tool
+
+```json
+{
+  "tool": "committer",
+  "message": "feat(auth): add OAuth2 login support",
+  "files": ["src/auth.rs", "src/config.rs"]
+}
 ```
-The `gh pr create` command automatically creates a PR from your fork to the original repo.
+
+**Features:**
+- Only stages specified files (no accidental commits)
+- Scans for secrets before commit
+- Validates conventional commit format
+- Adds Co-Authored-By attribution
+
+### 6. Push and Create PR
+
+```json
+{
+  "tool": "deploy",
+  "operation": "create_pr",
+  "title": "feat(auth): Add OAuth2 login support",
+  "body": "## Summary\n- Adds OAuth2 authentication\n- Updates config schema\n\n## Test Plan\n- [ ] Test login flow\n- [ ] Test token refresh"
+}
+```
+
+This automatically:
+- Pushes your branch
+- Creates the PR with proper formatting
+- Returns the PR URL
+
+### 7. Monitor CI/CD
+
+```json
+{"tool": "deploy", "operation": "workflow_status"}
+```
+
+Or for specific PR:
+```json
+{"tool": "deploy", "operation": "pr_status", "pr_number": 123}
+```
 
 ---
 
-## Workflow: Your Own Repos (Direct Push)
+## Conventional Commit Format
 
-Use this workflow when you HAVE write access to the repository.
+The `committer` tool enforces conventional commits:
 
-### 1. Clone the Repository
-```bash
-gh repo clone owner/repo
-cd repo
 ```
-**If already exists:** `cd repo && git fetch && git checkout main && git pull`
+type(scope): description
 
-### 2. Create a Feature Branch (use unique name)
-```bash
-git checkout -b feature/change-$(date +%s)
-```
+Types:
+- feat:     New feature
+- fix:      Bug fix
+- docs:     Documentation only
+- style:    Formatting (no code change)
+- refactor: Code change (not fix/feature)
+- perf:     Performance improvement
+- test:     Adding tests
+- chore:    Maintenance
+- ci:       CI/CD changes
+- build:    Build system changes
+- revert:   Revert previous commit
 
-### 3. Make Changes, Commit, Push, and Create PR
-```bash
-git add -A
-git commit -m "Description of changes"
-git push -u origin HEAD
-gh pr create --title "PR Title" --body "Description"
-```
-
-## Useful Commands
-
-### Repository Info
-- `gh repo view owner/repo` - View repository info
-- `gh repo clone owner/repo` - Clone a repository
-
-### Pull Requests
-- `gh pr list --repo owner/repo` - List open PRs
-- `gh pr view 123 --repo owner/repo` - View PR details
-- `gh pr checks 123 --repo owner/repo` - Check CI status on a PR
-- `gh pr create --repo owner/repo --title "Title" --body "Body"` - Create a PR
-
-### Issues
-- `gh issue list --repo owner/repo` - List issues
-- `gh issue view 123 --repo owner/repo` - View issue details
-- `gh issue create --repo owner/repo --title "Title" --body "Body"` - Create an issue
-
-### CI/Workflow Runs
-- `gh run list --repo owner/repo --limit 10` - List recent workflow runs
-- `gh run view <run-id> --repo owner/repo` - View a run details
-- `gh run view <run-id> --repo owner/repo --log-failed` - View logs for failed steps
-
-### Git Commands
-- `git -C path/to/repo status` - Check repo status
-- `git -C path/to/repo log --oneline -10` - View recent commits
-- `git -C path/to/repo diff` - View uncommitted changes
-- `git -C path/to/repo branch -a` - List all branches
-
-## API for Advanced Queries
-
-The `gh api` command is useful for accessing data not available through other subcommands.
-
-Get PR with specific fields:
-```bash
-gh api repos/owner/repo/pulls/55 --jq '.title, .state, .user.login'
+Examples:
+- feat(auth): add OAuth2 login support
+- fix: resolve memory leak in cache
+- refactor(api): simplify error handling
+- docs(readme): update installation steps
 ```
 
-## JSON Output
+---
 
-Most commands support `--json` for structured output. You can use `--jq` to filter:
+## Quick Reference
 
-```bash
-gh issue list --repo owner/repo --json number,title --jq '.[] | "\(.number): \(.title)"'
+### Check Repository Status
+```json
+{"tool": "git", "operation": "status"}
 ```
+
+### View Recent Commits
+```json
+{"tool": "git", "operation": "log", "count": 10}
+```
+
+### View Diff
+```json
+{"tool": "git", "operation": "diff"}
+{"tool": "git", "operation": "diff", "staged": true}
+```
+
+### Create Branch
+```json
+{"tool": "git", "operation": "checkout", "branch": "feature/name", "create": true}
+```
+
+### Switch Branch
+```json
+{"tool": "git", "operation": "checkout", "branch": "main"}
+```
+
+### Push Changes
+```json
+{"tool": "deploy", "operation": "push"}
+```
+
+### Pull Latest
+```json
+{"tool": "git", "operation": "pull"}
+```
+
+### Fetch Updates
+```json
+{"tool": "git", "operation": "fetch"}
+```
+
+---
+
+## PR Quality Checks
+
+### Full Check (Recommended before PR)
+```json
+{"tool": "pr_quality", "operation": "full_check"}
+```
+
+### Debug Code Scan Only
+```json
+{"tool": "pr_quality", "operation": "debug_scan"}
+```
+
+### TODO/FIXME Scan
+```json
+{"tool": "pr_quality", "operation": "todo_scan"}
+```
+
+### Size Check
+```json
+{"tool": "pr_quality", "operation": "size_check"}
+```
+
+### Diff Summary
+```json
+{"tool": "pr_quality", "operation": "diff_summary"}
+```
+
+---
+
+## Deployment Operations
+
+### Push to Remote
+```json
+{"tool": "deploy", "operation": "push"}
+{"tool": "deploy", "operation": "push", "branch": "feature/x", "set_upstream": true}
+```
+
+### Create Pull Request
+```json
+{
+  "tool": "deploy",
+  "operation": "create_pr",
+  "title": "Your PR Title",
+  "body": "## Summary\n...\n\n## Test Plan\n...",
+  "base_branch": "main",
+  "draft": false
+}
+```
+
+### Check PR Status
+```json
+{"tool": "deploy", "operation": "pr_status", "pr_number": 123}
+```
+
+### Check Workflow Runs
+```json
+{"tool": "deploy", "operation": "workflow_status"}
+{"tool": "deploy", "operation": "workflow_status", "workflow_name": "ci.yml"}
+```
+
+### Trigger Deployment
+```json
+{"tool": "deploy", "operation": "trigger_deploy", "workflow_name": "deploy.yml", "branch": "main"}
+```
+
+### Merge PR
+```json
+{"tool": "deploy", "operation": "merge_pr", "pr_number": 123}
+{"tool": "deploy", "operation": "merge_pr", "pr_number": 123, "auto_merge": true}
+```
+
+---
+
+## Safety Features
+
+### Protected Branches
+Force push is **forbidden** on protected branches (main, master, production, prod, release).
+
+### Secret Detection
+The committer tool scans for:
+- API keys and tokens
+- Passwords in config files
+- Private keys (RSA, EC, SSH)
+- AWS credentials
+- GitHub tokens (PAT, fine-grained)
+- OpenAI/Anthropic API keys
+- Slack tokens
+
+### Sensitive File Protection
+Blocked by default:
+- `.env`, `.env.local`, `.env.production`
+- `credentials.json`, `secrets.json`
+- `*.pem`, `*.key`, `id_rsa`
+- `.npmrc`, `.pypirc`, `.htpasswd`
+
+---
 
 ## Best Practices
 
-1. **Always create a feature branch** - never commit directly to main
-2. **Write descriptive commit messages** explaining the "why"
-3. **Keep PRs focused** on a single change
-4. **Include context in PR descriptions** - reference issues, explain motivation
-5. **Use conventional branch names** like `fix/issue-description` or `feature/new-capability`
+1. **Always use `committer`** instead of raw git commit for safety
+2. **Run `pr_quality`** before creating PRs
+3. **Create feature branches** - never commit directly to main
+4. **Use conventional commits** for clear history
+5. **Keep PRs focused** on a single change
+6. **Include test plan** in PR descriptions
+7. **Monitor CI** after pushing

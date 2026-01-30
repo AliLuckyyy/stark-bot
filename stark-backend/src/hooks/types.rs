@@ -28,6 +28,22 @@ pub enum HookEvent {
     BeforeResponse,
     /// After a memory is created or updated
     OnMemoryUpdate,
+    /// Before a git commit is created
+    BeforeCommit,
+    /// After a git commit is created
+    AfterCommit,
+    /// Before code is pushed to remote
+    BeforePush,
+    /// After code is pushed to remote
+    AfterPush,
+    /// Before a PR is created
+    BeforePrCreate,
+    /// After a PR is created
+    AfterPrCreate,
+    /// Session started (new conversation)
+    SessionStart,
+    /// Session ended (conversation complete)
+    SessionEnd,
 }
 
 impl HookEvent {
@@ -41,6 +57,14 @@ impl HookEvent {
             HookEvent::OnError => "on_error",
             HookEvent::BeforeResponse => "before_response",
             HookEvent::OnMemoryUpdate => "on_memory_update",
+            HookEvent::BeforeCommit => "before_commit",
+            HookEvent::AfterCommit => "after_commit",
+            HookEvent::BeforePush => "before_push",
+            HookEvent::AfterPush => "after_push",
+            HookEvent::BeforePrCreate => "before_pr_create",
+            HookEvent::AfterPrCreate => "after_pr_create",
+            HookEvent::SessionStart => "session_start",
+            HookEvent::SessionEnd => "session_end",
         }
     }
 }
@@ -132,6 +156,22 @@ pub struct HookContext {
     pub error: Option<String>,
     /// Response content (for before_response)
     pub response: Option<String>,
+    /// Git commit message (for commit hooks)
+    pub commit_message: Option<String>,
+    /// Files being committed/staged (for commit hooks)
+    pub commit_files: Option<Vec<String>>,
+    /// Git branch name (for git-related hooks)
+    pub branch: Option<String>,
+    /// Git remote name (for push hooks)
+    pub remote: Option<String>,
+    /// PR title (for PR hooks)
+    pub pr_title: Option<String>,
+    /// PR body/description (for PR hooks)
+    pub pr_body: Option<String>,
+    /// PR URL (for after_pr_create)
+    pub pr_url: Option<String>,
+    /// Workspace path (for file/git operations)
+    pub workspace: Option<String>,
     /// Additional context data
     pub extra: Value,
 }
@@ -151,6 +191,14 @@ impl HookContext {
             new_mode: None,
             error: None,
             response: None,
+            commit_message: None,
+            commit_files: None,
+            branch: None,
+            remote: None,
+            pr_title: None,
+            pr_body: None,
+            pr_url: None,
+            workspace: None,
             extra: Value::Null,
         }
     }
@@ -197,6 +245,44 @@ impl HookContext {
     /// Set response context
     pub fn with_response(mut self, response: String) -> Self {
         self.response = Some(response);
+        self
+    }
+
+    /// Set commit context
+    pub fn with_commit(mut self, message: String, files: Vec<String>) -> Self {
+        self.commit_message = Some(message);
+        self.commit_files = Some(files);
+        self
+    }
+
+    /// Set git branch context
+    pub fn with_branch(mut self, branch: String) -> Self {
+        self.branch = Some(branch);
+        self
+    }
+
+    /// Set git remote context
+    pub fn with_remote(mut self, remote: String) -> Self {
+        self.remote = Some(remote);
+        self
+    }
+
+    /// Set PR context
+    pub fn with_pr(mut self, title: String, body: Option<String>) -> Self {
+        self.pr_title = Some(title);
+        self.pr_body = body;
+        self
+    }
+
+    /// Set PR URL (after creation)
+    pub fn with_pr_url(mut self, url: String) -> Self {
+        self.pr_url = Some(url);
+        self
+    }
+
+    /// Set workspace path
+    pub fn with_workspace(mut self, workspace: String) -> Self {
+        self.workspace = Some(workspace);
         self
     }
 

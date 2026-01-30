@@ -50,6 +50,11 @@ fn register_all_tools(registry: &mut ToolRegistry) {
     registry.register(Arc::new(builtin::GlobTool::new()));
     registry.register(Arc::new(builtin::GitTool::new()));
 
+    // Advanced development tools (scoped commits, deployment, PR quality)
+    registry.register(Arc::new(builtin::CommitterTool::new()));
+    registry.register(Arc::new(builtin::DeployTool::new()));
+    registry.register(Arc::new(builtin::PrQualityTool::new()));
+
     // Exec tool (Development mode)
     registry.register(Arc::new(builtin::ExecTool::new()));
 
