@@ -59,6 +59,11 @@ pub enum EventType {
     StreamThinkingDelta,
     StreamEnd,
     StreamError,
+    // Process execution events
+    ExecOutput,        // Real-time stdout/stderr line from exec
+    ProcessStarted,    // Background process started
+    ProcessOutput,     // Background process output chunk
+    ProcessCompleted,  // Background process finished
 }
 
 impl EventType {
@@ -106,6 +111,10 @@ impl EventType {
             Self::StreamThinkingDelta => "stream.thinking_delta",
             Self::StreamEnd => "stream.end",
             Self::StreamError => "stream.error",
+            Self::ExecOutput => "exec.output",
+            Self::ProcessStarted => "process.started",
+            Self::ProcessOutput => "process.output",
+            Self::ProcessCompleted => "process.completed",
         }
     }
 }
@@ -809,6 +818,65 @@ impl GatewayEvent {
                 "channel_id": channel_id,
                 "error": error,
                 "code": code,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    // =====================================================
+    // Process Execution Events
+    // =====================================================
+
+    /// Real-time output line from exec command
+    pub fn exec_output(channel_id: i64, line: &str, stream: &str) -> Self {
+        Self::new(
+            EventType::ExecOutput,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "line": line,
+                "stream": stream,  // "stdout" or "stderr"
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    /// Background process started
+    pub fn process_started(channel_id: i64, process_id: &str, command: &str, pid: u32) -> Self {
+        Self::new(
+            EventType::ProcessStarted,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "process_id": process_id,
+                "command": command,
+                "pid": pid,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    /// Background process output chunk
+    pub fn process_output(channel_id: i64, process_id: &str, lines: &[String], stream: &str) -> Self {
+        Self::new(
+            EventType::ProcessOutput,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "process_id": process_id,
+                "lines": lines,
+                "stream": stream,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    /// Background process completed
+    pub fn process_completed(channel_id: i64, process_id: &str, exit_code: Option<i32>, duration_ms: i64) -> Self {
+        Self::new(
+            EventType::ProcessCompleted,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "process_id": process_id,
+                "exit_code": exit_code,
+                "duration_ms": duration_ms,
                 "timestamp": chrono::Utc::now().to_rfc3339()
             }),
         )

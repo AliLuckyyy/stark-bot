@@ -1,5 +1,6 @@
 use crate::ai::multi_agent::SubAgentManager;
 use crate::db::Database;
+use crate::execution::ProcessManager;
 use crate::gateway::events::EventBroadcaster;
 use crate::gateway::protocol::GatewayEvent;
 use crate::tools::register::RegisterStore;
@@ -323,6 +324,8 @@ pub struct ToolContext {
     pub database: Option<Arc<Database>>,
     /// SubAgent manager for spawning and managing sub-agents
     pub subagent_manager: Option<Arc<SubAgentManager>>,
+    /// Process manager for background command execution
+    pub process_manager: Option<Arc<ProcessManager>>,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -339,6 +342,7 @@ impl std::fmt::Debug for ToolContext {
             .field("registers", &self.registers.keys())
             .field("database", &self.database.is_some())
             .field("subagent_manager", &self.subagent_manager.is_some())
+            .field("process_manager", &self.process_manager.is_some())
             .finish()
     }
 }
@@ -357,6 +361,7 @@ impl Default for ToolContext {
             registers: RegisterStore::new(),
             database: None,
             subagent_manager: None,
+            process_manager: None,
         }
     }
 }
@@ -438,6 +443,12 @@ impl ToolContext {
     /// Add a SubAgentManager to the context (for spawning sub-agents)
     pub fn with_subagent_manager(mut self, manager: Arc<SubAgentManager>) -> Self {
         self.subagent_manager = Some(manager);
+        self
+    }
+
+    /// Add a ProcessManager to the context (for background command execution)
+    pub fn with_process_manager(mut self, manager: Arc<ProcessManager>) -> Self {
+        self.process_manager = Some(manager);
         self
     }
 

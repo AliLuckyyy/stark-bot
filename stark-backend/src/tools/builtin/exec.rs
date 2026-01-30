@@ -86,6 +86,16 @@ impl ExecTool {
                 enum_values: None,
             },
         );
+        properties.insert(
+            "background".to_string(),
+            PropertySchema {
+                schema_type: "boolean".to_string(),
+                description: "Run command in background. Returns immediately with process ID. Use for long-running commands like servers.".to_string(),
+                default: Some(json!(false)),
+                items: None,
+                enum_values: None,
+            },
+        );
 
         ExecTool {
             definition: ToolDefinition {
@@ -101,6 +111,43 @@ impl ExecTool {
             max_timeout,
             security_mode,
         }
+    }
+
+    /// Check if a command looks like a server/long-running process
+    fn is_server_command(command: &str) -> bool {
+        let lower = command.to_lowercase();
+        let server_patterns = [
+            "npm start",
+            "npm run dev",
+            "npm run serve",
+            "npm run server",
+            "yarn start",
+            "yarn dev",
+            "pnpm start",
+            "pnpm dev",
+            "node index.js",
+            "node server.js",
+            "node app.js",
+            "node src/index",
+            "python -m http.server",
+            "python manage.py runserver",
+            "python -m flask run",
+            "flask run",
+            "uvicorn",
+            "gunicorn",
+            "cargo run",
+            "cargo watch",
+            "go run",
+            "rails server",
+            "rails s",
+            "php artisan serve",
+            "php -S",
+            "dotnet run",
+            "java -jar",
+            "gradle bootRun",
+            "mvn spring-boot:run",
+        ];
+        server_patterns.iter().any(|p| lower.contains(p))
     }
 
     /// Check if a command should be blocked for security
@@ -137,6 +184,138 @@ impl ExecTool {
 
         None
     }
+
+    /// Execute a command in background mode using ProcessManager
+    async fn execute_background(&self, params: &ExecParams, context: &ToolContext) -> ToolResult {
+        // Determine working directory
+        let workspace = context
+            .workspace_dir
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+        let working_dir = if let Some(ref wd) = params.workdir {
+            let wd_path = PathBuf::from(wd);
+            if wd_path.is_absolute() {
+                wd_path
+            } else {
+                workspace.join(wd_path)
+            }
+        } else {
+            workspace
+        };
+
+        // Ensure working directory exists
+        if !working_dir.exists() {
+            if let Err(e) = std::fs::create_dir_all(&working_dir) {
+                return ToolResult::error(format!("Cannot create working directory: {}", e));
+            }
+        }
+
+        // Get channel ID from context (default to 0 if not set)
+        let channel_id = context.channel_id.unwrap_or(0);
+
+        // Check if ProcessManager is available in context
+        let process_manager = match context.process_manager.as_ref() {
+            Some(pm) => pm,
+            None => {
+                // Fallback: spawn without ProcessManager (fire-and-forget)
+                log::warn!("ProcessManager not available, using fire-and-forget background execution");
+
+                let shell = if cfg!(target_os = "windows") { "cmd" } else { "sh" };
+                let shell_arg = if cfg!(target_os = "windows") { "/C" } else { "-c" };
+
+                match Command::new(shell)
+                    .arg(shell_arg)
+                    .arg(&params.command)
+                    .current_dir(&working_dir)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                {
+                    Ok(child) => {
+                        let pid = child.id().unwrap_or(0);
+                        return ToolResult::success(format!(
+                            "Started background process (PID: {})\n\
+                            Command: {}\n\
+                            Working directory: {}\n\n\
+                            Note: ProcessManager not available. Process output is not captured.",
+                            pid,
+                            params.command,
+                            working_dir.display()
+                        )).with_metadata(json!({
+                            "pid": pid,
+                            "command": params.command,
+                            "background": true,
+                            "working_dir": working_dir.to_string_lossy()
+                        }));
+                    }
+                    Err(e) => {
+                        return ToolResult::error(format!("Failed to start background process: {}", e));
+                    }
+                }
+            }
+        };
+
+        // Build env vars from context
+        let mut env_vars = HashMap::new();
+
+        // Add API keys from context
+        for key_id in ApiKeyId::all() {
+            if let Some(value) = context.get_api_key(key_id.as_str()) {
+                if let Some(key_env_vars) = key_id.env_vars() {
+                    for env_var in key_env_vars {
+                        env_vars.insert(env_var.to_string(), value.clone());
+                    }
+                }
+            }
+        }
+
+        // Add custom env vars from params
+        if let Some(ref param_env) = params.env {
+            for (key, value) in param_env {
+                env_vars.insert(key.clone(), value.clone());
+            }
+        }
+
+        // Spawn via ProcessManager
+        match process_manager
+            .spawn(
+                &params.command,
+                &working_dir,
+                channel_id,
+                Some(&env_vars),
+            )
+            .await
+        {
+            Ok(process_id) => {
+                // Get process info for response
+                let info = process_manager.get(&process_id);
+                let pid = info.as_ref().and_then(|i| i.pid).unwrap_or(0);
+
+                ToolResult::success(format!(
+                    "Started background process\n\
+                    Process ID: {}\n\
+                    PID: {}\n\
+                    Command: {}\n\
+                    Working directory: {}\n\n\
+                    Use `process_status` tool with id=\"{}\" to check status or get output.",
+                    process_id,
+                    pid,
+                    params.command,
+                    working_dir.display(),
+                    process_id
+                )).with_metadata(json!({
+                    "process_id": process_id,
+                    "pid": pid,
+                    "command": params.command,
+                    "background": true,
+                    "working_dir": working_dir.to_string_lossy()
+                }))
+            }
+            Err(e) => ToolResult::error(format!("Failed to start background process: {}", e)),
+        }
+    }
 }
 
 impl Default for ExecTool {
@@ -152,6 +331,8 @@ struct ExecParams {
     #[serde(default, deserialize_with = "deserialize_u64_lenient")]
     timeout: Option<u64>,
     env: Option<HashMap<String, String>>,
+    #[serde(default)]
+    background: Option<bool>,
 }
 
 #[async_trait]
@@ -169,6 +350,26 @@ impl Tool for ExecTool {
         // Check for dangerous commands
         if let Some(reason) = self.is_dangerous_command(&params.command) {
             return ToolResult::error(format!("Command blocked: {}", reason));
+        }
+
+        let background = params.background.unwrap_or(false);
+
+        // Detect server commands and warn if not using background mode
+        if Self::is_server_command(&params.command) && !background {
+            return ToolResult::success(format!(
+                "Detected server/long-running command: `{}`\n\n\
+                Server commands run indefinitely and will block or timeout.\n\
+                To run this command, use `background: true` to run it asynchronously.\n\n\
+                Example:\n```json\n{{\n  \"command\": \"{}\",\n  \"background\": true\n}}\n```\n\n\
+                After starting, use the `process_status` tool to check on it or get its output.",
+                params.command,
+                params.command.replace("\"", "\\\"")
+            ));
+        }
+
+        // Handle background execution
+        if background {
+            return self.execute_background(&params, context).await;
         }
 
         let timeout_secs = params.timeout.unwrap_or(60).min(self.max_timeout);

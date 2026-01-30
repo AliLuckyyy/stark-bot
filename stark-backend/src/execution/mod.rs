@@ -9,8 +9,10 @@
 
 mod tracker;
 mod pending_confirmation;
+mod process_manager;
 mod session_lanes;
 
 pub use tracker::ExecutionTracker;
 pub use pending_confirmation::{PendingConfirmation, PendingConfirmationManager};
+pub use process_manager::{ProcessInfo, ProcessManager, ProcessStatus};
 pub use session_lanes::{SessionLaneGuard, SessionLaneManager, SessionLaneStats};
