@@ -9,7 +9,7 @@ use crate::db::Database;
 use crate::execution::ExecutionTracker;
 use crate::gateway::events::EventBroadcaster;
 use crate::gateway::protocol::GatewayEvent;
-use crate::models::{MemoryType, SessionScope};
+use crate::models::{AgentSettings, MemoryType, SessionScope};
 use crate::models::session_message::MessageRole as DbMessageRole;
 use crate::tools::{ToolConfig, ToolContext, ToolDefinition, ToolExecution, ToolRegistry};
 use chrono::Utc;
@@ -260,14 +260,12 @@ impl MessageDispatcher {
             self.context_manager.update_context_tokens(session.id, user_tokens);
         }
 
-        // Get active agent settings from database
+        // Get active agent settings from database, falling back to kimi defaults
         let settings = match self.db.get_active_agent_settings() {
             Ok(Some(settings)) => settings,
             Ok(None) => {
-                let error = "No AI provider configured. Please configure agent settings.".to_string();
-                log::error!("{}", error);
-                self.execution_tracker.complete_execution(message.channel_id);
-                return DispatchResult::error(error);
+                log::info!("No agent configured, using default kimi settings");
+                AgentSettings::default()
             }
             Err(e) => {
                 let error = format!("Database error: {}", e);

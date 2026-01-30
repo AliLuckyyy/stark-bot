@@ -35,6 +35,8 @@ pub enum EventType {
     // Transaction events
     TxPending,
     TxConfirmed,
+    // Register events
+    RegisterUpdate,
 }
 
 impl EventType {
@@ -62,6 +64,7 @@ impl EventType {
             Self::ConfirmationExpired => "confirmation.expired",
             Self::TxPending => "tx.pending",
             Self::TxConfirmed => "tx.confirmed",
+            Self::RegisterUpdate => "register.update",
         }
     }
 }
@@ -510,6 +513,21 @@ impl GatewayEvent {
                 "asset": asset,
                 "pay_to": pay_to,
                 "resource": resource,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    /// Register updated - broadcast full registry state
+    pub fn register_update(
+        channel_id: i64,
+        registers: Value,
+    ) -> Self {
+        Self::new(
+            EventType::RegisterUpdate,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "registers": registers,
                 "timestamp": chrono::Utc::now().to_rfc3339()
             }),
         )

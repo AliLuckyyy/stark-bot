@@ -1,7 +1,7 @@
 ---
 name: transfer
 description: "Transfer ETH or ERC20 tokens on Base/Ethereum using the burner wallet"
-version: 2.0.0
+version: 3.0.0
 author: starkbot
 homepage: https://basescan.org
 metadata: {"requires_auth": false, "clawdbot":{"emoji":"💸","requires":{"bins":[]}}}
@@ -13,58 +13,120 @@ tags: [crypto, transfer, send, eth, erc20, base, wallet]
 
 Transfer ETH or ERC20 tokens from the burner wallet to any address.
 
+> **IMPORTANT: This skill uses the REGISTER PATTERN to prevent hallucination of transaction data.**
+>
+> - Transaction params are stored in registers using `register_set`
+> - `web3_tx` reads from the register using `from_register`
+> - You NEVER pass raw tx params directly to web3_tx
+
 ## Tools Used
 
 | Tool | Purpose |
 |------|---------|
 | `local_burner_wallet` | Get wallet address and check balances |
-| `web3_tx` | Transfer native ETH |
-| `web3_function_call` | Transfer ERC20 tokens (no hex encoding needed!) |
+| `register_set` | Build transaction params in a register |
+| `x402_rpc` | Get gas price |
+| `web3_tx` | Execute transfer from register |
+| `web3_function_call` | Transfer ERC20 tokens |
 
 ---
 
-## How to Transfer
+## How to Transfer ETH
 
-### Transfer ETH (Native)
-
-For native ETH, use `web3_tx` with `to` and `value`:
+### Step 1: Get Gas Price
 
 ```json
+// x402_rpc
+{"preset": "gas_price", "network": "base"}
+```
+
+### Step 2: Build Transfer in Register
+
+Use `register_set` with `json_value` to store the tx data:
+
+```json
+// register_set
 {
-  "to": "<RECIPIENT_ADDRESS>",
-  "value": "<AMOUNT_IN_WEI>",
-  "network": "base"
+  "key": "transfer_tx",
+  "json_value": {
+    "to": "<RECIPIENT_ADDRESS>",
+    "value": "<AMOUNT_IN_WEI>",
+    "data": "0x",
+    "gas": "21000"
+  }
 }
 ```
 
-**Example: Send 0.01 ETH**
+### Step 3: Execute Transfer
+
 ```json
 // web3_tx
 {
-  "to": "0x1234567890abcdef1234567890abcdef12345678",
-  "value": "10000000000000000",
+  "from_register": "transfer_tx",
+  "max_fee_per_gas": "<GAS_PRICE>",
   "network": "base"
 }
 ```
 
-### Transfer ERC20 Tokens
+---
 
-**Use `web3_function_call` - NO HEX ENCODING NEEDED!**
+## Complete Example: Send 0.01 ETH
+
+### 1. Get gas price
 
 ```json
+// x402_rpc
+{"preset": "gas_price", "network": "base"}
+```
+Response: `"0xf4240"`
+
+### 2. Build tx in register
+
+```json
+// register_set
+{
+  "key": "transfer_tx",
+  "json_value": {
+    "to": "0x1234567890abcdef1234567890abcdef12345678",
+    "value": "10000000000000000",
+    "data": "0x",
+    "gas": "21000"
+  }
+}
+```
+
+### 3. Execute
+
+```json
+// web3_tx
+{
+  "from_register": "transfer_tx",
+  "max_fee_per_gas": "0xf4240",
+  "network": "base"
+}
+```
+
+---
+
+## Transfer ERC20 Tokens
+
+For ERC20 transfers, use `web3_function_call` directly (it handles encoding):
+
+```json
+// web3_function_call
 {
   "abi": "erc20",
   "contract": "<TOKEN_ADDRESS>",
   "function": "transfer",
   "params": [
     "<RECIPIENT_ADDRESS>",
-    "<AMOUNT_IN_WEI>"
+    "<AMOUNT_IN_SMALLEST_UNIT>"
   ],
   "network": "base"
 }
 ```
 
-**Example: Send 10 USDC**
+### Example: Send 10 USDC
 
 USDC has 6 decimals, so 10 USDC = `10000000`
 
@@ -111,6 +173,8 @@ USDC has 6 decimals, so 10 USDC = `10000000`
 
 ## Common Token Addresses (Base)
 
+Use `token_lookup` to get addresses automatically, or use these directly:
+
 | Token | Address | Decimals |
 |-------|---------|----------|
 | USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` | 6 |
@@ -139,69 +203,6 @@ USDC has 6 decimals, so 10 USDC = `10000000`
 
 ---
 
-## Complete Examples
-
-### Example 1: Send 0.05 ETH
-
-```json
-// web3_tx
-{
-  "to": "0xRecipientAddressHere",
-  "value": "50000000000000000",
-  "network": "base"
-}
-```
-
-### Example 2: Send 25 USDC
-
-```json
-// web3_function_call
-{
-  "abi": "erc20",
-  "contract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-  "function": "transfer",
-  "params": [
-    "0xRecipientAddressHere",
-    "25000000"
-  ],
-  "network": "base"
-}
-```
-
-### Example 3: Send 100 BNKR
-
-```json
-// web3_function_call
-{
-  "abi": "erc20",
-  "contract": "0x22aF33FE49fD1Fa80c7149773dDe5890D3c76F3b",
-  "function": "transfer",
-  "params": [
-    "0xRecipientAddressHere",
-    "100000000000000000000"
-  ],
-  "network": "base"
-}
-```
-
-### Example 4: Send 0.001 cbBTC
-
-```json
-// web3_function_call
-{
-  "abi": "erc20",
-  "contract": "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
-  "function": "transfer",
-  "params": [
-    "0xRecipientAddressHere",
-    "100000"
-  ],
-  "network": "base"
-}
-```
-
----
-
 ## Pre-Transfer Checklist
 
 Before executing a transfer:
@@ -221,12 +222,14 @@ Before executing a transfer:
 | "Transfer amount exceeds balance" | Not enough tokens | Check token balance |
 | "Gas estimation failed" | Invalid recipient or params | Verify addresses |
 | "Transaction reverted" | Contract rejection | Check amounts |
+| "Register not found" | Missing register | Use register_set first |
 
 ---
 
 ## Security Notes
 
-1. **Always double-check addresses** - Transactions cannot be reversed
-2. **Start with small test amounts** - Verify the flow works first
-3. **Verify token contracts** - Use official addresses from block explorer
-4. **Gas costs** - ETH needed for gas even when sending ERC20s
+1. **Register pattern prevents hallucination** - tx data flows through registers
+2. **Always double-check addresses** - Transactions cannot be reversed
+3. **Start with small test amounts** - Verify the flow works first
+4. **Verify token contracts** - Use official addresses from block explorer
+5. **Gas costs** - ETH needed for gas even when sending ERC20s

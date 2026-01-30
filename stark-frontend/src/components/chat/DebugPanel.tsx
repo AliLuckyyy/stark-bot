@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { ChevronDown, ChevronRight, DollarSign, Cpu, Clock, Globe, Terminal, Wrench, Brain, CheckCircle, XCircle, Loader2, Zap } from 'lucide-react';
+import { ChevronDown, ChevronRight, DollarSign, Cpu, Clock, Globe, Terminal, Wrench, Brain, CheckCircle, XCircle, Loader2, Zap, Database } from 'lucide-react';
 import clsx from 'clsx';
 import { useGateway } from '@/hooks/useGateway';
 import type { ExecutionEvent, X402PaymentEvent } from '@/types';
@@ -94,11 +94,18 @@ const getToolIcon = (toolName?: string, desc?: string) => {
   return <Wrench className="w-3 h-3" />;
 };
 
+interface RegisterEntry {
+  value: unknown;
+  source: string;
+  age_secs: number;
+}
+
 export default function DebugPanel({ className }: DebugPanelProps) {
   const [executions, setExecutions] = useState<Map<string, DebugTask>>(new Map());
   const [payments, setPayments] = useState<X402PaymentEvent[]>([]);
+  const [registers, setRegisters] = useState<Record<string, RegisterEntry>>({});
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const [activeTab, setActiveTab] = useState<'tasks' | 'payments'>('tasks');
+  const [activeTab, setActiveTab] = useState<'tasks' | 'payments' | 'registry'>('tasks');
   const [, forceUpdate] = useState(0);
   const { on, off } = useGateway();
 
@@ -341,6 +348,11 @@ export default function DebugPanel({ className }: DebugPanelProps) {
     setPayments((prev) => [...prev, event]);
   }, []);
 
+  const handleRegisterUpdate = useCallback((data: unknown) => {
+    const event = data as { registers: Record<string, RegisterEntry> };
+    setRegisters(event.registers || {});
+  }, []);
+
   useEffect(() => {
     on('execution.started', handleExecutionStarted);
     on('execution.thinking', handleExecutionThinking);
@@ -351,6 +363,7 @@ export default function DebugPanel({ className }: DebugPanelProps) {
     on('tool.execution', handleToolExecution);
     on('tool.result', handleToolResult);
     on('x402.payment', handleX402Payment);
+    on('register.update', handleRegisterUpdate);
 
     return () => {
       off('execution.started', handleExecutionStarted);
@@ -362,8 +375,9 @@ export default function DebugPanel({ className }: DebugPanelProps) {
       off('tool.execution', handleToolExecution);
       off('tool.result', handleToolResult);
       off('x402.payment', handleX402Payment);
+      off('register.update', handleRegisterUpdate);
     };
-  }, [on, off, handleExecutionStarted, handleExecutionThinking, handleTaskStarted, handleTaskUpdated, handleTaskCompleted, handleExecutionCompleted, handleToolExecution, handleToolResult, handleX402Payment]);
+  }, [on, off, handleExecutionStarted, handleExecutionThinking, handleTaskStarted, handleTaskUpdated, handleTaskCompleted, handleExecutionCompleted, handleToolExecution, handleToolResult, handleX402Payment, handleRegisterUpdate]);
 
   const toggleCollapse = (taskId: string) => {
     setCollapsed((prev) => {
@@ -624,6 +638,23 @@ export default function DebugPanel({ className }: DebugPanelProps) {
             </span>
           )}
         </button>
+        <button
+          onClick={() => setActiveTab('registry')}
+          className={clsx(
+            'flex-1 px-4 py-2 text-sm font-medium transition-colors',
+            activeTab === 'registry'
+              ? 'bg-slate-800 text-white border-b-2 border-purple-500'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+          )}
+        >
+          <Database className="w-4 h-4 inline mr-2" />
+          Registry
+          {Object.keys(registers).length > 0 && (
+            <span className="ml-2 text-xs text-purple-400">
+              {Object.keys(registers).length}
+            </span>
+          )}
+        </button>
       </div>
 
       {/* Tab content */}
@@ -701,6 +732,49 @@ export default function DebugPanel({ className }: DebugPanelProps) {
                         </div>
                       )}
                     </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'registry' && (
+          <div className="p-2">
+            {Object.keys(registers).length === 0 ? (
+              <div className="text-center text-slate-500 py-8">
+                <Database className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                <p>No registers set</p>
+                <p className="text-xs mt-1">Registers store data passed between tools</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {Object.entries(registers).map(([key, entry]) => (
+                  <div
+                    key={key}
+                    className="p-3 bg-slate-800 rounded-lg border border-slate-700 hover:border-slate-600 transition-colors"
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <Database className="w-4 h-4 text-purple-400" />
+                        <span className="text-sm font-semibold text-purple-400 font-mono">
+                          {key}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-slate-500">
+                        <span className="px-1.5 py-0.5 bg-slate-700 rounded">
+                          {entry.source}
+                        </span>
+                        {entry.age_secs > 0 && (
+                          <span>{entry.age_secs}s ago</span>
+                        )}
+                      </div>
+                    </div>
+                    <pre className="text-xs text-slate-300 bg-slate-900 p-2 rounded overflow-x-auto font-mono">
+                      {typeof entry.value === 'object'
+                        ? JSON.stringify(entry.value, null, 2)
+                        : String(entry.value)}
+                    </pre>
                   </div>
                 ))}
               </div>

@@ -74,6 +74,17 @@ impl LocalBurnerWalletTool {
             },
         );
 
+        properties.insert(
+            "cache_as".to_string(),
+            PropertySchema {
+                schema_type: "string".to_string(),
+                description: "Register name to cache the result (e.g., 'wallet_address'). For 'address' action, caches the address string.".to_string(),
+                default: None,
+                items: None,
+                enum_values: None,
+            },
+        );
+
         LocalBurnerWalletTool {
             definition: ToolDefinition {
                 name: "local_burner_wallet".to_string(),
@@ -189,6 +200,8 @@ struct WalletParams {
     network: String,
     token: Option<String>,
     message: Option<String>,
+    /// Register name to cache the result
+    cache_as: Option<String>,
 }
 
 fn default_network() -> String {
@@ -201,7 +214,7 @@ impl Tool for LocalBurnerWalletTool {
         self.definition.clone()
     }
 
-    async fn execute(&self, params: Value, _context: &ToolContext) -> ToolResult {
+    async fn execute(&self, params: Value, context: &ToolContext) -> ToolResult {
         let params: WalletParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => return ToolResult::error(format!("Invalid parameters: {}", e)),
@@ -210,8 +223,15 @@ impl Tool for LocalBurnerWalletTool {
         match params.action.as_str() {
             "address" => {
                 match Self::get_address() {
-                    Ok(address) => ToolResult::success(format!("Wallet address: {}", address))
-                        .with_metadata(json!({"address": address})),
+                    Ok(address) => {
+                        // Cache in register if requested
+                        if let Some(ref register_name) = params.cache_as {
+                            context.set_register(register_name, json!(address), "local_burner_wallet");
+                            log::info!("[local_burner_wallet] Cached address in register '{}'", register_name);
+                        }
+                        ToolResult::success(format!("Wallet address: {}", address))
+                            .with_metadata(json!({"address": address, "cached_in_register": params.cache_as}))
+                    }
                     Err(e) => ToolResult::error(e),
                 }
             }

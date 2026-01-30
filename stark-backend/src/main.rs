@@ -53,6 +53,13 @@ async fn main() -> std::io::Result<()> {
     dotenv().ok();
     env_logger::init();
 
+    // Load presets and tokens from config directory
+    let config_dir = std::path::Path::new("./config");
+    log::info!("Loading presets from config directory");
+    tools::presets::load_presets(config_dir);
+    log::info!("Loading token configs from config directory");
+    tools::builtin::token_lookup::load_tokens(config_dir);
+
     let config = Config::from_env();
     let port = config.port;
     let gateway_port = config.gateway_port;

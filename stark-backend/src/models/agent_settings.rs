@@ -13,6 +13,22 @@ pub struct AgentSettings {
     pub updated_at: DateTime<Utc>,
 }
 
+impl Default for AgentSettings {
+    /// Returns default kimi agent settings (used when no agent is configured)
+    fn default() -> Self {
+        let now = Utc::now();
+        Self {
+            id: 0,
+            endpoint: "https://kimi.defirelay.com/api/v1/chat/completions".to_string(),
+            model_archetype: "kimi".to_string(),
+            max_tokens: 40000,
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}
+
 /// Response type for agent settings API
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentSettingsResponse {

@@ -181,6 +181,21 @@ export function useWallet() {
     autoConnect();
   }, [checkNetwork, fetchUsdcBalance]);
 
+  // Auto-refresh USDC balance every 10 seconds
+  useEffect(() => {
+    if (!state.address || !state.isCorrectNetwork || !state.isConnected) return;
+
+    const intervalId = setInterval(() => {
+      fetchUsdcBalance(state.address!).then(usdcBalance => {
+        if (usdcBalance !== null) {
+          setState(prev => ({ ...prev, usdcBalance }));
+        }
+      });
+    }, 10000); // 10 seconds
+
+    return () => clearInterval(intervalId);
+  }, [state.address, state.isCorrectNetwork, state.isConnected, fetchUsdcBalance]);
+
   // Listen for account and network changes
   useEffect(() => {
     if (!window.ethereum) return;

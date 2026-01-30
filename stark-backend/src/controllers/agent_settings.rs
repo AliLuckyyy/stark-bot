@@ -1,6 +1,6 @@
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use crate::ai::ArchetypeId;
-use crate::models::{AgentSettingsResponse, UpdateAgentSettingsRequest, UpdateBotSettingsRequest};
+use crate::models::{AgentSettings, AgentSettingsResponse, UpdateAgentSettingsRequest, UpdateBotSettingsRequest};
 use crate::AppState;
 
 /// Validate session token from request
@@ -51,10 +51,9 @@ pub async fn get_agent_settings(
             HttpResponse::Ok().json(response)
         }
         Ok(None) => {
-            HttpResponse::Ok().json(serde_json::json!({
-                "configured": false,
-                "message": "No AI endpoint configured"
-            }))
+            // Return default kimi settings when none configured
+            let response: AgentSettingsResponse = AgentSettings::default().into();
+            HttpResponse::Ok().json(response)
         }
         Err(e) => {
             log::error!("Failed to get agent settings: {}", e);

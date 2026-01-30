@@ -1,5 +1,8 @@
 //! x402 RPC tool for making paid EVM RPC calls via DeFi Relay
+//!
+//! Uses presets to build RPC params from register values, preventing hallucination.
 
+use crate::tools::presets::{get_rpc_preset, list_rpc_presets};
 use crate::tools::registry::Tool;
 use crate::tools::types::{
     PropertySchema, ToolContext, ToolDefinition, ToolGroup, ToolInputSchema, ToolResult,
@@ -24,9 +27,11 @@ struct JsonRpcRequest {
 /// JSON-RPC response structure
 #[derive(Debug, Deserialize)]
 struct JsonRpcResponse {
+    #[allow(dead_code)]
     jsonrpc: String,
     result: Option<Value>,
     error: Option<JsonRpcError>,
+    #[allow(dead_code)]
     id: u64,
 }
 
@@ -34,10 +39,11 @@ struct JsonRpcResponse {
 struct JsonRpcError {
     code: i64,
     message: String,
+    #[allow(dead_code)]
     data: Option<Value>,
 }
 
-/// x402 RPC tool for paid EVM RPC calls
+/// x402 RPC tool for paid EVM RPC calls (preset-only)
 pub struct X402RpcTool {
     definition: ToolDefinition,
     client: Arc<RwLock<Option<X402Client>>>,
@@ -48,24 +54,18 @@ impl X402RpcTool {
         let mut properties = HashMap::new();
 
         properties.insert(
-            "method".to_string(),
+            "preset".to_string(),
             PropertySchema {
                 schema_type: "string".to_string(),
-                description: "The JSON-RPC method to call (e.g., 'eth_call', 'eth_getBalance', 'eth_blockNumber')".to_string(),
+                description: "RPC preset. Available: 'gas_price', 'block_number', 'get_balance' (reads wallet_address), 'get_nonce' (reads wallet_address). Presets read from registers automatically.".to_string(),
                 default: None,
                 items: None,
-                enum_values: None,
-            },
-        );
-
-        properties.insert(
-            "params".to_string(),
-            PropertySchema {
-                schema_type: "array".to_string(),
-                description: "The parameters for the RPC call as a JSON array".to_string(),
-                default: Some(json!([])),
-                items: None,
-                enum_values: None,
+                enum_values: Some(vec![
+                    "gas_price".to_string(),
+                    "block_number".to_string(),
+                    "get_balance".to_string(),
+                    "get_nonce".to_string(),
+                ]),
             },
         );
 
@@ -73,32 +73,21 @@ impl X402RpcTool {
             "network".to_string(),
             PropertySchema {
                 schema_type: "string".to_string(),
-                description: "The network to use: 'base' or 'mainnet'".to_string(),
+                description: "Network: 'base' or 'mainnet'".to_string(),
                 default: Some(json!("base")),
                 items: None,
                 enum_values: Some(vec!["base".to_string(), "mainnet".to_string()]),
             },
         );
 
-        properties.insert(
-            "endpoint_type".to_string(),
-            PropertySchema {
-                schema_type: "string".to_string(),
-                description: "Endpoint type: 'light' for standard methods (cheaper), 'heavy' for eth_getLogs, debug_*, trace_* methods".to_string(),
-                default: Some(json!("light")),
-                items: None,
-                enum_values: Some(vec!["light".to_string(), "heavy".to_string()]),
-            },
-        );
-
         X402RpcTool {
             definition: ToolDefinition {
                 name: "x402_rpc".to_string(),
-                description: "Make paid EVM RPC calls via x402 protocol. Costs USDC per request (light: ~0.0001 USDC, heavy: ~0.001 USDC). Use for on-chain queries like balances, contract calls, etc.".to_string(),
+                description: "Make paid EVM RPC calls using presets. Presets read from registers. Available: gas_price, block_number, get_balance, get_nonce.".to_string(),
                 input_schema: ToolInputSchema {
                     schema_type: "object".to_string(),
                     properties,
-                    required: vec!["method".to_string()],
+                    required: vec!["preset".to_string()],
                 },
                 group: ToolGroup::Web,
             },
@@ -108,16 +97,6 @@ impl X402RpcTool {
 
     /// Get or create the x402 client
     async fn get_client(&self) -> Result<X402Client, String> {
-        // Check if we have a cached client
-        {
-            let client_guard = self.client.read().await;
-            if let Some(ref client) = *client_guard {
-                // We can't clone X402Client, so we need to recreate it each time
-                // or store the private key. For now, let's just get the private key again.
-            }
-        }
-
-        // Get private key from config
         let private_key = crate::config::burner_wallet_private_key()
             .ok_or("BURNER_WALLET_BOT_PRIVATE_KEY environment variable not set")?;
 
@@ -133,21 +112,13 @@ impl Default for X402RpcTool {
 
 #[derive(Debug, Deserialize)]
 struct X402RpcParams {
-    method: String,
-    #[serde(default)]
-    params: Value,
+    preset: String,
     #[serde(default = "default_network")]
     network: String,
-    #[serde(default = "default_endpoint_type")]
-    endpoint_type: String,
 }
 
 fn default_network() -> String {
     "base".to_string()
-}
-
-fn default_endpoint_type() -> String {
-    "light".to_string()
 }
 
 #[async_trait]
@@ -156,7 +127,7 @@ impl Tool for X402RpcTool {
         self.definition.clone()
     }
 
-    async fn execute(&self, params: Value, _context: &ToolContext) -> ToolResult {
+    async fn execute(&self, params: Value, context: &ToolContext) -> ToolResult {
         let params: X402RpcParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => return ToolResult::error(format!("Invalid parameters: {}", e)),
@@ -167,29 +138,59 @@ impl Tool for X402RpcTool {
             return ToolResult::error("Network must be 'base' or 'mainnet'");
         }
 
-        // Validate endpoint type
-        if params.endpoint_type != "light" && params.endpoint_type != "heavy" {
-            return ToolResult::error("Endpoint type must be 'light' or 'heavy'");
+        // Get preset configuration
+        let preset = match get_rpc_preset(&params.preset) {
+            Some(p) => p,
+            None => {
+                return ToolResult::error(format!(
+                    "Unknown preset: '{}'. Available: {}",
+                    params.preset,
+                    list_rpc_presets().join(", ")
+                ))
+            }
+        };
+
+        // Build params from registers
+        let mut param_values: Vec<Value> = Vec::new();
+        for reg_key in &preset.params {
+            let value = match context.registers.get(reg_key) {
+                Some(v) => match v.as_str() {
+                    Some(s) => json!(s),
+                    None => v,
+                },
+                None => {
+                    return ToolResult::error(format!(
+                        "Preset '{}' requires register '{}' but it was not found. Available: {:?}",
+                        params.preset,
+                        reg_key,
+                        context.registers.keys()
+                    ));
+                }
+            };
+            param_values.push(value);
         }
 
-        // Build the RPC URL
-        let url = format!(
-            "https://rpc.defirelay.com/rpc/{}/{}",
-            params.endpoint_type, params.network
+        // Append "latest" if needed
+        if preset.append_latest {
+            param_values.push(json!("latest"));
+        }
+
+        log::info!(
+            "[x402_rpc] Preset '{}' -> {} with {} params on {}",
+            params.preset,
+            preset.method,
+            param_values.len(),
+            params.network
         );
 
-        // Ensure params is an array
-        let rpc_params = match &params.params {
-            Value::Array(_) => params.params.clone(),
-            Value::Null => json!([]),
-            other => json!([other]),
-        };
+        // Build the RPC URL
+        let url = format!("https://rpc.defirelay.com/rpc/light/{}", params.network);
 
         // Build JSON-RPC request
         let rpc_request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
-            method: params.method.clone(),
-            params: rpc_params,
+            method: preset.method.clone(),
+            params: json!(param_values),
             id: 1,
         };
 
@@ -199,9 +200,7 @@ impl Tool for X402RpcTool {
             Err(e) => return ToolResult::error(e),
         };
 
-        log::info!("[x402_rpc] Calling {} on {} via {}", params.method, params.network, params.endpoint_type);
-
-        // Make the request with x402 payment handling
+        // Make the request
         let response = match client.post_with_payment(&url, &rpc_request).await {
             Ok(r) => r,
             Err(e) => return ToolResult::error(format!("RPC request failed: {}", e)),
@@ -222,7 +221,12 @@ impl Tool for X402RpcTool {
 
         let rpc_response: JsonRpcResponse = match serde_json::from_str(&body) {
             Ok(r) => r,
-            Err(e) => return ToolResult::error(format!("Invalid JSON-RPC response: {} - Body: {}", e, body)),
+            Err(e) => {
+                return ToolResult::error(format!(
+                    "Invalid JSON-RPC response: {} - Body: {}",
+                    e, body
+                ))
+            }
         };
 
         // Check for RPC error
@@ -232,13 +236,12 @@ impl Tool for X402RpcTool {
 
         // Build metadata
         let mut metadata = json!({
-            "method": params.method,
+            "preset": params.preset,
+            "method": preset.method,
             "network": params.network,
-            "endpoint_type": params.endpoint_type,
             "wallet": client.wallet_address(),
         });
 
-        // Add payment info if a payment was made
         if let Some(payment) = response.payment {
             metadata["payment"] = json!({
                 "amount": payment.amount_formatted,
@@ -249,8 +252,10 @@ impl Tool for X402RpcTool {
 
         // Return the result
         match rpc_response.result {
-            Some(result) => ToolResult::success(serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()))
-                .with_metadata(metadata),
+            Some(result) => ToolResult::success(
+                serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()),
+            )
+            .with_metadata(metadata),
             None => ToolResult::success("null").with_metadata(metadata),
         }
     }

@@ -1,4 +1,6 @@
 use crate::gateway::events::EventBroadcaster;
+use crate::gateway::protocol::GatewayEvent;
+use crate::tools::register::RegisterStore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -197,6 +199,9 @@ pub struct ToolContext {
     pub extra: HashMap<String, Value>,
     /// Event broadcaster for real-time events (e.g., tx.pending)
     pub broadcaster: Option<Arc<EventBroadcaster>>,
+    /// Register store for passing data between tools safely
+    /// This prevents hallucination of critical data (like tx params)
+    pub registers: RegisterStore,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -210,6 +215,7 @@ impl std::fmt::Debug for ToolContext {
             .field("workspace_dir", &self.workspace_dir)
             .field("extra", &self.extra)
             .field("broadcaster", &self.broadcaster.is_some())
+            .field("registers", &self.registers.keys())
             .finish()
     }
 }
@@ -225,6 +231,7 @@ impl Default for ToolContext {
             workspace_dir: None,
             extra: HashMap::new(),
             broadcaster: None,
+            registers: RegisterStore::new(),
         }
     }
 }
@@ -289,6 +296,41 @@ impl ToolContext {
     pub fn with_broadcaster(mut self, broadcaster: Arc<EventBroadcaster>) -> Self {
         self.broadcaster = Some(broadcaster);
         self
+    }
+
+    /// Add a register store to the context (for passing data between tools safely)
+    pub fn with_registers(mut self, registers: RegisterStore) -> Self {
+        self.registers = registers;
+        self
+    }
+
+    /// Set a register value and broadcast the update to connected clients.
+    /// This is the preferred way to set registers when you want real-time updates in the UI.
+    pub fn set_register(&self, key: &str, value: Value, source_tool: &str) {
+        // Set the register value
+        self.registers.set(key, value, source_tool);
+
+        // Broadcast the update if we have a broadcaster and channel
+        if let (Some(broadcaster), Some(channel_id)) = (&self.broadcaster, self.channel_id) {
+            let registers_snapshot = self.get_registers_snapshot();
+            broadcaster.broadcast(GatewayEvent::register_update(channel_id, registers_snapshot));
+        }
+    }
+
+    /// Get a snapshot of all registers as JSON for broadcasting
+    pub fn get_registers_snapshot(&self) -> Value {
+        let keys = self.registers.keys();
+        let mut map = serde_json::Map::new();
+        for key in keys {
+            if let Some(entry) = self.registers.get_entry(&key) {
+                map.insert(key, serde_json::json!({
+                    "value": entry.value,
+                    "source": entry.source_tool,
+                    "age_secs": entry.created_at.elapsed().as_secs()
+                }));
+            }
+        }
+        Value::Object(map)
     }
 
     /// Get bot name from the context

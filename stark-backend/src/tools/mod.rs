@@ -1,7 +1,10 @@
 pub mod builtin;
+pub mod presets;
+pub mod register;
 pub mod registry;
 pub mod types;
 
+pub use register::{PresetOrCustom, RegisterStore};
 pub use registry::{Tool, ToolRegistry};
 pub use types::{
     PropertySchema, ToolConfig, ToolContext, ToolDefinition, ToolExecution, ToolGroup,
@@ -19,6 +22,8 @@ fn register_all_tools(registry: &mut ToolRegistry) {
     registry.register(Arc::new(builtin::LocalBurnerWalletTool::new()));
     registry.register(Arc::new(builtin::Web3TxTool::new()));
     registry.register(Arc::new(builtin::Web3FunctionCallTool::new()));
+    registry.register(Arc::new(builtin::TokenLookupTool::new()));
+    registry.register(Arc::new(builtin::RegisterSetTool::new()));
 
     // Filesystem tools
     registry.register(Arc::new(builtin::ReadFileTool::new()));
