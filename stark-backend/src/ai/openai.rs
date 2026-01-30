@@ -1,7 +1,9 @@
+use crate::ai::streaming::{StreamEvent, StreamSender};
 use crate::ai::types::{AiResponse, ToolCall};
 use crate::ai::Message;
 use crate::tools::ToolDefinition;
 use crate::x402::{X402Client, X402PaymentInfo, is_x402_endpoint};
+use futures_util::StreamExt;
 use reqwest::{header, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -26,6 +28,50 @@ struct OpenAICompletionRequest {
     tools: Option<Vec<OpenAITool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
+}
+
+/// Streaming chunk response from OpenAI API
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamChunk {
+    choices: Vec<OpenAIStreamChoice>,
+    #[serde(default)]
+    usage: Option<OpenAIStreamUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamChoice {
+    delta: OpenAIStreamDelta,
+    finish_reason: Option<String>,
+    index: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamDelta {
+    content: Option<String>,
+    tool_calls: Option<Vec<OpenAIStreamToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamToolCall {
+    index: usize,
+    id: Option<String>,
+    #[serde(rename = "type")]
+    call_type: Option<String>,
+    function: Option<OpenAIStreamFunction>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamFunction {
+    name: Option<String>,
+    arguments: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamUsage {
+    prompt_tokens: Option<u32>,
+    completion_tokens: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -273,6 +319,7 @@ impl OpenAIClient {
             max_tokens: self.max_tokens,
             tools: openai_tools.clone(),
             tool_choice: if tools.is_empty() { None } else { Some("auto".to_string()) },
+            stream: None,
         };
 
         // Debug: Log full request details
@@ -418,5 +465,243 @@ impl OpenAIClient {
         }
 
         messages
+    }
+
+    /// Generate response with streaming support
+    ///
+    /// Sends stream events through the provided sender as they arrive.
+    /// Returns the final accumulated response.
+    pub async fn generate_with_tools_streaming(
+        &self,
+        messages: Vec<Message>,
+        tool_history: Vec<OpenAIMessage>,
+        tools: Vec<ToolDefinition>,
+        stream_sender: StreamSender,
+    ) -> Result<AiResponse, String> {
+        // Convert messages to OpenAI format
+        let mut api_messages: Vec<OpenAIMessage> = messages
+            .into_iter()
+            .map(|m| OpenAIMessage {
+                role: m.role.to_string(),
+                content: Some(m.content),
+                tool_calls: None,
+                tool_call_id: None,
+            })
+            .collect();
+
+        // Add tool history messages
+        api_messages.extend(tool_history);
+
+        // Convert tool definitions to OpenAI format
+        let openai_tools: Option<Vec<OpenAITool>> = if tools.is_empty() {
+            None
+        } else {
+            Some(
+                tools
+                    .iter()
+                    .map(|t| OpenAITool {
+                        tool_type: "function".to_string(),
+                        function: OpenAIFunction {
+                            name: t.name.clone(),
+                            description: t.description.clone(),
+                            parameters: json!({
+                                "type": t.input_schema.schema_type,
+                                "properties": t.input_schema.properties.iter().map(|(k, v)| {
+                                    let mut prop = serde_json::Map::new();
+                                    prop.insert("type".to_string(), json!(v.schema_type));
+                                    prop.insert("description".to_string(), json!(v.description));
+                                    if let Some(ref enum_vals) = v.enum_values {
+                                        prop.insert("enum".to_string(), json!(enum_vals));
+                                    }
+                                    if let Some(ref default_val) = v.default {
+                                        prop.insert("default".to_string(), default_val.clone());
+                                    }
+                                    if let Some(ref items) = v.items {
+                                        prop.insert("items".to_string(), json!({
+                                            "type": items.schema_type,
+                                            "description": items.description
+                                        }));
+                                    }
+                                    (k.clone(), Value::Object(prop))
+                                }).collect::<serde_json::Map<String, Value>>(),
+                                "required": t.input_schema.required
+                            }),
+                        },
+                    })
+                    .collect(),
+            )
+        };
+
+        let request = OpenAICompletionRequest {
+            model: self.model.clone(),
+            messages: api_messages,
+            max_tokens: self.max_tokens,
+            tools: openai_tools.clone(),
+            tool_choice: if tools.is_empty() { None } else { Some("auto".to_string()) },
+            stream: Some(true),
+        };
+
+        log::info!(
+            "[OPENAI] Streaming request to {} with model {} and {} tools",
+            self.endpoint,
+            self.model,
+            openai_tools.as_ref().map(|t| t.len()).unwrap_or(0),
+        );
+
+        // Note: x402 streaming not yet supported, fall back to regular client
+        let response = self.client
+            .post(&self.endpoint)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| format!("OpenAI API streaming request failed: {}", e))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            let _ = stream_sender.send(StreamEvent::Error {
+                message: format!("OpenAI API error: {}", error_text),
+                code: Some(status.as_u16().to_string()),
+            }).await;
+            return Err(format!("OpenAI API returned error status: {}", status));
+        }
+
+        // Process SSE stream
+        let mut stream = response.bytes_stream();
+        let mut content = String::new();
+        let mut tool_calls: Vec<ToolCall> = Vec::new();
+        let mut partial_tool_calls: std::collections::HashMap<usize, (String, String, String)> =
+            std::collections::HashMap::new(); // index -> (id, name, arguments)
+        let mut finish_reason: Option<String> = None;
+        let mut usage: Option<(u32, u32)> = None;
+
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result
+                .map_err(|e| format!("Stream read error: {}", e))?;
+
+            let chunk_str = String::from_utf8_lossy(&chunk);
+
+            // Parse SSE format (data: {...}\n\n)
+            for line in chunk_str.lines() {
+                let line = line.trim();
+                if line.is_empty() || line == "data: [DONE]" {
+                    continue;
+                }
+
+                if let Some(json_str) = line.strip_prefix("data: ") {
+                    if let Ok(chunk_data) = serde_json::from_str::<OpenAIStreamChunk>(json_str) {
+                        for choice in chunk_data.choices {
+                            // Handle content delta
+                            if let Some(delta_content) = choice.delta.content {
+                                content.push_str(&delta_content);
+                                let _ = stream_sender.send(StreamEvent::ContentDelta {
+                                    content: delta_content,
+                                    index: choice.index,
+                                }).await;
+                            }
+
+                            // Handle tool call deltas
+                            if let Some(tool_call_deltas) = choice.delta.tool_calls {
+                                for tc_delta in tool_call_deltas {
+                                    let idx = tc_delta.index;
+                                    let entry = partial_tool_calls.entry(idx).or_insert_with(|| {
+                                        (String::new(), String::new(), String::new())
+                                    });
+
+                                    // Update ID if present
+                                    if let Some(id) = tc_delta.id {
+                                        entry.0 = id.clone();
+                                        if let Some(ref func) = tc_delta.function {
+                                            if let Some(ref name) = func.name {
+                                                entry.1 = name.clone();
+                                                let _ = stream_sender.send(StreamEvent::ToolCallStart {
+                                                    id: entry.0.clone(),
+                                                    name: name.clone(),
+                                                    index: idx,
+                                                }).await;
+                                            }
+                                        }
+                                    }
+
+                                    // Update function details
+                                    if let Some(ref func) = tc_delta.function {
+                                        if let Some(ref name) = func.name {
+                                            if entry.1.is_empty() {
+                                                entry.1 = name.clone();
+                                            }
+                                        }
+                                        if let Some(ref args) = func.arguments {
+                                            entry.2.push_str(args);
+                                            let _ = stream_sender.send(StreamEvent::ToolCallDelta {
+                                                id: entry.0.clone(),
+                                                arguments_delta: args.clone(),
+                                                index: idx,
+                                            }).await;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Handle finish reason
+                            if let Some(reason) = choice.finish_reason {
+                                finish_reason = Some(reason);
+                            }
+                        }
+
+                        // Capture usage if present
+                        if let Some(u) = chunk_data.usage {
+                            usage = Some((
+                                u.prompt_tokens.unwrap_or(0),
+                                u.completion_tokens.unwrap_or(0),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Convert partial tool calls to complete ones
+        for (idx, (id, name, args)) in partial_tool_calls {
+            if !id.is_empty() && !name.is_empty() {
+                let arguments: Value = serde_json::from_str(&args).unwrap_or(json!({}));
+
+                let _ = stream_sender.send(StreamEvent::ToolCallComplete {
+                    id: id.clone(),
+                    name: name.clone(),
+                    arguments: arguments.clone(),
+                    index: idx,
+                }).await;
+
+                tool_calls.push(ToolCall {
+                    id,
+                    name,
+                    arguments,
+                });
+            }
+        }
+
+        // Send done event
+        let _ = stream_sender.send(StreamEvent::Done {
+            stop_reason: finish_reason.clone(),
+            usage: usage.map(|(input, output)| crate::ai::streaming::StreamUsage {
+                input_tokens: input,
+                output_tokens: output,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+            }),
+        }).await;
+
+        let is_tool_use = finish_reason.as_deref() == Some("tool_calls") || !tool_calls.is_empty();
+
+        Ok(AiResponse {
+            content,
+            tool_calls,
+            stop_reason: if is_tool_use {
+                Some("tool_use".to_string())
+            } else {
+                Some("end_turn".to_string())
+            },
+            x402_payment: None, // Streaming doesn't support x402 yet
+        })
     }
 }

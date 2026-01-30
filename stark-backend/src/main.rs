@@ -22,6 +22,7 @@ mod skills;
 mod tools;
 mod x402;
 mod eip8004;
+mod hooks;
 
 use channels::MessageDispatcher;
 use config::Config;

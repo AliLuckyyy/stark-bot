@@ -1,3 +1,10 @@
+//! Sub-agent tools for spawning and monitoring background agent instances
+//!
+//! This module provides two tools:
+//! - `subagent`: Spawn a new sub-agent to work on a task
+//! - `subagent_status`: Check the status of sub-agents
+
+use crate::ai::multi_agent::{SubAgentContext, SubAgentManager, SubAgentStatus};
 use crate::tools::registry::Tool;
 use crate::tools::types::{
     PropertySchema, ToolContext, ToolDefinition, ToolGroup, ToolInputSchema, ToolResult,
@@ -10,23 +17,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// Counter for generating unique subagent IDs
+/// Counter for generating unique subagent IDs (fallback when no manager)
 static SUBAGENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-/// Status of a running subagent
+/// Legacy status of a running subagent (for backwards compatibility)
 #[derive(Debug, Clone)]
 pub struct SubagentStatus {
     pub id: String,
     pub label: String,
     pub task: String,
-    pub status: String,  // "running", "completed", "failed"
+    pub status: String, // "running", "completed", "failed"
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
     pub result: Option<String>,
     pub error: Option<String>,
 }
 
-/// Global registry of running subagents
+/// Global registry of running subagents (fallback when no manager)
 lazy_static::lazy_static! {
     static ref SUBAGENT_REGISTRY: Arc<RwLock<HashMap<String, SubagentStatus>>> =
         Arc::new(RwLock::new(HashMap::new()));
@@ -139,17 +146,17 @@ impl SubagentTool {
         }
     }
 
-    /// Get status of a subagent by ID
+    /// Get status of a subagent by ID (legacy method)
     pub async fn get_status(id: &str) -> Option<SubagentStatus> {
         SUBAGENT_REGISTRY.read().await.get(id).cloned()
     }
 
-    /// List all subagents
+    /// List all subagents (legacy method)
     pub async fn list_all() -> Vec<SubagentStatus> {
         SUBAGENT_REGISTRY.read().await.values().cloned().collect()
     }
 
-    /// Update subagent status
+    /// Update subagent status (legacy method)
     async fn update_status(id: &str, status: &str, result: Option<String>, error: Option<String>) {
         let mut registry = SUBAGENT_REGISTRY.write().await;
         if let Some(entry) = registry.get_mut(id) {
@@ -160,6 +167,15 @@ impl SubagentTool {
                 entry.completed_at = Some(chrono::Utc::now());
             }
         }
+    }
+
+    /// Get SubAgentManager from context if available
+    /// Note: Currently returns None as we use the `subagent_manager_ptr` approach instead.
+    #[allow(dead_code)]
+    fn get_manager(_context: &ToolContext) -> Option<Arc<SubAgentManager>> {
+        // The manager is stored as a pointer address in `subagent_manager_ptr`
+        // This method is kept for potential future use with Arc-based storage
+        None
     }
 }
 
@@ -194,37 +210,179 @@ impl Tool for SubagentTool {
 
         // Generate unique subagent ID
         let counter = SUBAGENT_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let label = params.label.clone().unwrap_or_else(|| format!("task-{}", counter));
-        let subagent_id = format!("subagent-{}-{}", label, counter);
+        let label = params
+            .label
+            .clone()
+            .unwrap_or_else(|| format!("task-{}", counter));
+        let subagent_id = SubAgentManager::generate_id(&label);
 
         let timeout_secs = params.timeout.unwrap_or(300).min(3600);
         let wait = params.wait.unwrap_or(false);
 
         log::info!(
-            "Spawning subagent '{}' with task: {}",
+            "[SUBAGENT] Spawning subagent '{}' with task: {}",
             subagent_id,
-            if params.task.len() > 100 { &params.task[..100] } else { &params.task }
+            if params.task.len() > 100 {
+                &params.task[..100]
+            } else {
+                &params.task
+            }
+        );
+
+        // Check if we have access to the SubAgentManager via the context
+        if let Some(manager) = &context.subagent_manager {
+            // Real execution via SubAgentManager
+
+            // Build SubAgentContext
+                let session_id = context.session_id.unwrap_or(0);
+                let channel_id = context.channel_id.unwrap_or(0);
+
+                let subagent_context = SubAgentContext::new(
+                    subagent_id.clone(),
+                    session_id,
+                    channel_id,
+                    label.clone(),
+                    params.task.clone(),
+                    timeout_secs,
+                )
+                .with_model(params.model.clone())
+                .with_context(params.context.clone())
+                .with_thinking(params.thinking.clone());
+
+                // Spawn the sub-agent
+                match manager.spawn(subagent_context).await {
+                    Ok(id) => {
+                        if wait {
+                            // Poll for completion
+                            let start = std::time::Instant::now();
+                            let timeout_duration = std::time::Duration::from_secs(timeout_secs);
+
+                            loop {
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                                match manager.get_status(&id) {
+                                    Ok(Some(status)) => {
+                                        if status.status.is_terminal() {
+                                            match status.status {
+                                                SubAgentStatus::Completed => {
+                                                    return ToolResult::success(
+                                                        status
+                                                            .result
+                                                            .unwrap_or_else(|| "Task completed".to_string()),
+                                                    )
+                                                    .with_metadata(json!({
+                                                        "subagent_id": id,
+                                                        "label": label,
+                                                        "status": "completed",
+                                                        "waited": true
+                                                    }));
+                                                }
+                                                SubAgentStatus::Failed => {
+                                                    return ToolResult::error(format!(
+                                                        "Subagent failed: {}",
+                                                        status.error.unwrap_or_else(|| "Unknown error".to_string())
+                                                    ));
+                                                }
+                                                SubAgentStatus::TimedOut => {
+                                                    return ToolResult::error(format!(
+                                                        "Subagent '{}' timed out after {} seconds",
+                                                        id, timeout_secs
+                                                    ));
+                                                }
+                                                SubAgentStatus::Cancelled => {
+                                                    return ToolResult::error(format!(
+                                                        "Subagent '{}' was cancelled",
+                                                        id
+                                                    ));
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        return ToolResult::error(format!(
+                                            "Subagent '{}' not found",
+                                            id
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        return ToolResult::error(format!(
+                                            "Failed to get subagent status: {}",
+                                            e
+                                        ));
+                                    }
+                                }
+
+                                if start.elapsed() > timeout_duration {
+                                    return ToolResult::error(format!(
+                                        "Subagent '{}' timed out after {} seconds",
+                                        id, timeout_secs
+                                    ));
+                                }
+                            }
+                        } else {
+                            // Return immediately
+                            return ToolResult::success(format!(
+                                "Subagent '{}' spawned successfully and running in background.\n\
+                                 Label: {}\n\
+                                 Task: {}\n\
+                                 Timeout: {}s\n\
+                                 \n\
+                                 Use `subagent_status` with id '{}' to check progress.",
+                                id,
+                                label,
+                                if params.task.len() > 100 {
+                                    format!("{}...", &params.task[..100])
+                                } else {
+                                    params.task.clone()
+                                },
+                                timeout_secs,
+                                id
+                            ))
+                            .with_metadata(json!({
+                                "subagent_id": id,
+                                "label": label,
+                                "status": "running",
+                                "waited": false,
+                                "timeout": timeout_secs
+                            }));
+                        }
+                    }
+                    Err(e) => {
+                        return ToolResult::error(format!("Failed to spawn subagent: {}", e));
+                    }
+                }
+        }
+
+        // Fallback: Legacy in-memory approach when no manager is available
+        // This provides basic functionality without full AI execution
+        log::warn!(
+            "[SUBAGENT] No SubAgentManager available, using legacy in-memory approach"
         );
 
         // Build the full task prompt
-        let mut full_task = params.task.clone();
-        if let Some(ref ctx) = params.context {
-            full_task = format!("{}\n\n## Additional Context:\n{}", full_task, ctx);
-        }
+        let full_task = if let Some(ref ctx) = params.context {
+            format!("{}\n\n## Additional Context:\n{}", params.task, ctx)
+        } else {
+            params.task.clone()
+        };
 
-        // Register the subagent
+        // Register the subagent in legacy registry
         {
             let mut registry = SUBAGENT_REGISTRY.write().await;
-            registry.insert(subagent_id.clone(), SubagentStatus {
-                id: subagent_id.clone(),
-                label: label.clone(),
-                task: params.task.clone(),
-                status: "running".to_string(),
-                started_at: chrono::Utc::now(),
-                completed_at: None,
-                result: None,
-                error: None,
-            });
+            registry.insert(
+                subagent_id.clone(),
+                SubagentStatus {
+                    id: subagent_id.clone(),
+                    label: label.clone(),
+                    task: params.task.clone(),
+                    status: "running".to_string(),
+                    started_at: chrono::Utc::now(),
+                    completed_at: None,
+                    result: None,
+                    error: None,
+                },
+            );
         }
 
         // Clone values for the async task
@@ -234,42 +392,42 @@ impl Tool for SubagentTool {
         let channel_id = context.channel_id;
         let channel_type = context.channel_type.clone();
 
-        // Spawn the subagent task
+        // Spawn the subagent task (legacy simulation)
         let task_handle = tokio::spawn(async move {
-            // In a full implementation, this would:
-            // 1. Create an isolated session
-            // 2. Get the AI client with model override
-            // 3. Run the task through the dispatcher
-            // 4. Collect and store results
-            //
-            // For now, we simulate the execution flow
+            log::info!(
+                "[SUBAGENT] Legacy execution for '{}'",
+                subagent_id_clone
+            );
 
-            log::info!("Subagent '{}' starting execution", subagent_id_clone);
-
-            // Simulate some work (in real implementation, this calls the AI)
+            // Simulate work
             let start = std::time::Instant::now();
 
-            // This is where the actual AI execution would happen
-            // For now, we'll provide a placeholder that shows the structure
+            // Placeholder result
             let result = format!(
-                "Subagent '{}' processed task: {}\n\
+                "Subagent '{}' processed task.\n\
                  Model: {}\n\
                  Thinking: {}\n\
                  Channel: {:?} ({:?})\n\
                  \n\
-                 [Note: Full subagent execution requires integration with the AI client. \
-                 The subagent would process the task using tools and return results here.]",
+                 Task summary: {}\n\
+                 \n\
+                 [Note: This is a placeholder response. For full AI execution, \
+                 ensure SubAgentManager is properly configured.]",
                 subagent_id_clone,
-                if full_task.len() > 200 { &full_task[..200] } else { &full_task },
                 model_override.as_deref().unwrap_or("default"),
                 thinking_level.as_deref().unwrap_or("default"),
                 channel_id,
-                channel_type
+                channel_type,
+                if full_task.len() > 200 {
+                    &full_task[..200]
+                } else {
+                    &full_task
+                }
             );
 
             let duration = start.elapsed();
             log::info!(
-                "Subagent '{}' completed in {:?}",
+                "[SUBAGENT] Legacy execution '{}' completed in {:?}",
                 subagent_id_clone,
                 duration
             );
@@ -285,15 +443,16 @@ impl Tool for SubagentTool {
             match tokio::time::timeout(
                 std::time::Duration::from_secs(timeout_secs),
                 task_handle,
-            ).await {
-                Ok(Ok(result)) => {
-                    ToolResult::success(result).with_metadata(json!({
-                        "subagent_id": subagent_id,
-                        "label": label,
-                        "status": "completed",
-                        "waited": true
-                    }))
-                }
+            )
+            .await
+            {
+                Ok(Ok(result)) => ToolResult::success(result).with_metadata(json!({
+                    "subagent_id": subagent_id,
+                    "label": label,
+                    "status": "completed",
+                    "waited": true,
+                    "legacy": true
+                })),
                 Ok(Err(e)) => {
                     Self::update_status(&subagent_id, "failed", None, Some(e.to_string())).await;
                     ToolResult::error(format!("Subagent task failed: {}", e))
@@ -304,7 +463,8 @@ impl Tool for SubagentTool {
                         "failed",
                         None,
                         Some(format!("Timeout after {}s", timeout_secs)),
-                    ).await;
+                    )
+                    .await;
                     ToolResult::error(format!(
                         "Subagent '{}' timed out after {} seconds",
                         subagent_id, timeout_secs
@@ -322,15 +482,21 @@ impl Tool for SubagentTool {
                  Use `subagent_status` with id '{}' to check progress.",
                 subagent_id,
                 label,
-                if params.task.len() > 100 { format!("{}...", &params.task[..100]) } else { params.task.clone() },
+                if params.task.len() > 100 {
+                    format!("{}...", &params.task[..100])
+                } else {
+                    params.task.clone()
+                },
                 timeout_secs,
                 subagent_id
-            )).with_metadata(json!({
+            ))
+            .with_metadata(json!({
                 "subagent_id": subagent_id,
                 "label": label,
                 "status": "running",
                 "waited": false,
-                "timeout": timeout_secs
+                "timeout": timeout_secs,
+                "legacy": true
             }))
         }
     }
@@ -349,8 +515,23 @@ impl SubagentStatusTool {
             "id".to_string(),
             PropertySchema {
                 schema_type: "string".to_string(),
-                description: "The subagent ID to check status for. Omit to list all subagents.".to_string(),
+                description:
+                    "The subagent ID to check status for. Omit to list all subagents."
+                        .to_string(),
                 default: None,
+                items: None,
+                enum_values: None,
+            },
+        );
+
+        properties.insert(
+            "cancel".to_string(),
+            PropertySchema {
+                schema_type: "boolean".to_string(),
+                description:
+                    "If true and id is provided, cancel the running subagent."
+                        .to_string(),
+                default: Some(json!(false)),
                 items: None,
                 enum_values: None,
             },
@@ -359,7 +540,9 @@ impl SubagentStatusTool {
         SubagentStatusTool {
             definition: ToolDefinition {
                 name: "subagent_status".to_string(),
-                description: "Check the status of a running or completed subagent, or list all subagents.".to_string(),
+                description:
+                    "Check the status of a running or completed subagent, or list all subagents. Can also cancel running subagents."
+                        .to_string(),
                 input_schema: ToolInputSchema {
                     schema_type: "object".to_string(),
                     properties,
@@ -380,6 +563,7 @@ impl Default for SubagentStatusTool {
 #[derive(Debug, Deserialize)]
 struct SubagentStatusParams {
     id: Option<String>,
+    cancel: Option<bool>,
 }
 
 #[async_trait]
@@ -388,12 +572,133 @@ impl Tool for SubagentStatusTool {
         self.definition.clone()
     }
 
-    async fn execute(&self, params: Value, _context: &ToolContext) -> ToolResult {
+    async fn execute(&self, params: Value, context: &ToolContext) -> ToolResult {
         let params: SubagentStatusParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => return ToolResult::error(format!("Invalid parameters: {}", e)),
         };
 
+        // Check if we have SubAgentManager
+        if let Some(manager) = &context.subagent_manager {
+            if let Some(id) = params.id {
+                    // Check if cancel requested
+                    if params.cancel.unwrap_or(false) {
+                        match manager.cancel(&id) {
+                            Ok(true) => {
+                                return ToolResult::success(format!(
+                                    "Subagent '{}' cancellation requested.",
+                                    id
+                                ));
+                            }
+                            Ok(false) => {
+                                return ToolResult::error(format!(
+                                    "Subagent '{}' is not running or not found.",
+                                    id
+                                ));
+                            }
+                            Err(e) => {
+                                return ToolResult::error(format!(
+                                    "Failed to cancel subagent: {}",
+                                    e
+                                ));
+                            }
+                        }
+                    }
+
+                    // Get specific subagent status
+                    match manager.get_status(&id) {
+                        Ok(Some(status)) => {
+                            let mut result = format!(
+                                "## Subagent: {}\n\
+                                 Label: {}\n\
+                                 Status: {}\n\
+                                 Started: {}\n",
+                                status.id,
+                                status.label,
+                                status.status,
+                                status.started_at.format("%Y-%m-%d %H:%M:%S UTC")
+                            );
+
+                            if let Some(completed) = status.completed_at {
+                                result.push_str(&format!(
+                                    "Completed: {}\n\
+                                     Duration: {}s\n",
+                                    completed.format("%Y-%m-%d %H:%M:%S UTC"),
+                                    (completed - status.started_at).num_seconds()
+                                ));
+                            }
+
+                            result.push_str(&format!("\nTask: {}\n", status.task));
+
+                            if let Some(ref res) = status.result {
+                                result.push_str(&format!("\n## Result:\n{}\n", res));
+                            }
+
+                            if let Some(ref err) = status.error {
+                                result.push_str(&format!("\n## Error:\n{}\n", err));
+                            }
+
+                            return ToolResult::success(result).with_metadata(json!({
+                                "id": status.id,
+                                "status": status.status.to_string(),
+                                "label": status.label
+                            }));
+                        }
+                        Ok(None) => {
+                            return ToolResult::error(format!("Subagent '{}' not found", id));
+                        }
+                        Err(e) => {
+                            return ToolResult::error(format!(
+                                "Failed to get subagent status: {}",
+                                e
+                            ));
+                        }
+                    }
+                } else {
+                    // List all subagents for this channel
+                    let channel_id = context.channel_id.unwrap_or(0);
+                    match manager.list_by_channel(channel_id) {
+                        Ok(agents) => {
+                            if agents.is_empty() {
+                                return ToolResult::success("No subagents found.");
+                            }
+
+                            let mut result = format!("## Subagents ({} total)\n\n", agents.len());
+
+                            for status in &agents {
+                                result.push_str(&format!(
+                                    "- **{}** ({}): {} - {}\n",
+                                    status.id,
+                                    status.label,
+                                    status.status,
+                                    if status.task.len() > 50 {
+                                        format!("{}...", &status.task[..50])
+                                    } else {
+                                        status.task.clone()
+                                    }
+                                ));
+                            }
+
+                            return ToolResult::success(result).with_metadata(json!({
+                                "count": agents.len(),
+                                "subagents": agents.iter().map(|s| json!({
+                                    "id": s.id,
+                                    "label": s.label,
+                                    "status": s.status.to_string()
+                                })).collect::<Vec<_>>()
+                            }));
+                        }
+                        Err(e) => {
+                            return ToolResult::error(format!(
+                                "Failed to list subagents: {}",
+                                e
+                            ));
+                        }
+                    }
+                }
+        }
+
+        // Fallback: Legacy in-memory approach
         if let Some(id) = params.id {
             // Get specific subagent status
             match SubagentTool::get_status(&id).await {
@@ -429,7 +734,8 @@ impl Tool for SubagentStatusTool {
                     ToolResult::success(result).with_metadata(json!({
                         "id": status.id,
                         "status": status.status,
-                        "label": status.label
+                        "label": status.label,
+                        "legacy": true
                     }))
                 }
                 None => ToolResult::error(format!("Subagent '{}' not found", id)),
@@ -450,7 +756,11 @@ impl Tool for SubagentStatusTool {
                     status.id,
                     status.label,
                     status.status,
-                    if status.task.len() > 50 { format!("{}...", &status.task[..50]) } else { status.task.clone() }
+                    if status.task.len() > 50 {
+                        format!("{}...", &status.task[..50])
+                    } else {
+                        status.task.clone()
+                    }
                 ));
             }
 
@@ -460,7 +770,8 @@ impl Tool for SubagentStatusTool {
                     "id": s.id,
                     "label": s.label,
                     "status": s.status
-                })).collect::<Vec<_>>()
+                })).collect::<Vec<_>>(),
+                "legacy": true
             }))
         }
     }
@@ -491,7 +802,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_spawn_subagent() {
+    async fn test_spawn_subagent_legacy() {
         let tool = SubagentTool::new();
         let context = ToolContext::new();
 

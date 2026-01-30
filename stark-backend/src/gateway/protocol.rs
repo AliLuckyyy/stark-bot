@@ -17,6 +17,7 @@ pub enum EventType {
     AgentSubtypeChange, // Agent subtype change (Finance/CodeEngineer)
     AgentThinking,     // Progress update during long AI calls
     AgentError,        // Error notification (timeout, etc.)
+    AgentWarning,      // Warning when agent tries to skip tool calls
     // Tool events
     ToolExecution,
     ToolResult,
@@ -45,6 +46,19 @@ pub enum EventType {
     // Multi-agent task events
     AgentTasksUpdate,
     AgentToolsetUpdate,  // Current tools available to agent
+    // Sub-agent events
+    SubagentSpawned,
+    SubagentCompleted,
+    SubagentFailed,
+    // Streaming events
+    StreamStart,
+    StreamContentDelta,
+    StreamToolStart,
+    StreamToolDelta,
+    StreamToolComplete,
+    StreamThinkingDelta,
+    StreamEnd,
+    StreamError,
 }
 
 impl EventType {
@@ -60,6 +74,7 @@ impl EventType {
             Self::AgentSubtypeChange => "agent.subtype_change",
             Self::AgentThinking => "agent.thinking",
             Self::AgentError => "agent.error",
+            Self::AgentWarning => "agent.warning",
             Self::ToolExecution => "tool.execution",
             Self::ToolResult => "tool.result",
             Self::ToolWaiting => "tool.waiting",
@@ -80,6 +95,17 @@ impl EventType {
             Self::RegisterUpdate => "register.update",
             Self::AgentTasksUpdate => "agent.tasks_update",
             Self::AgentToolsetUpdate => "agent.toolset_update",
+            Self::SubagentSpawned => "subagent.spawned",
+            Self::SubagentCompleted => "subagent.completed",
+            Self::SubagentFailed => "subagent.failed",
+            Self::StreamStart => "stream.start",
+            Self::StreamContentDelta => "stream.content_delta",
+            Self::StreamToolStart => "stream.tool_start",
+            Self::StreamToolDelta => "stream.tool_delta",
+            Self::StreamToolComplete => "stream.tool_complete",
+            Self::StreamThinkingDelta => "stream.thinking_delta",
+            Self::StreamEnd => "stream.end",
+            Self::StreamError => "stream.error",
         }
     }
 }
@@ -308,6 +334,20 @@ impl GatewayEvent {
             serde_json::json!({
                 "channel_id": channel_id,
                 "error": error,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    /// Emit warning when agent tries to respond without calling tools
+    pub fn agent_warning(channel_id: i64, warning_type: &str, message: &str, attempt: u32) -> Self {
+        Self::new(
+            EventType::AgentWarning,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "warning_type": warning_type,
+                "message": message,
+                "attempt": attempt,
                 "timestamp": chrono::Utc::now().to_rfc3339()
             }),
         )
@@ -648,6 +688,127 @@ impl GatewayEvent {
                 "subtype": subtype,
                 "tools": tools,
                 "count": tools.len(),
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    // =====================================================
+    // Streaming Events
+    // =====================================================
+
+    /// Stream started - broadcast when streaming response begins
+    pub fn stream_start(channel_id: i64, session_id: Option<i64>) -> Self {
+        Self::new(
+            EventType::StreamStart,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "session_id": session_id,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    /// Content delta - incremental text content
+    pub fn stream_content_delta(channel_id: i64, content: &str, index: usize) -> Self {
+        Self::new(
+            EventType::StreamContentDelta,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "content": content,
+                "index": index
+            }),
+        )
+    }
+
+    /// Tool call started - broadcast when a tool call begins streaming
+    pub fn stream_tool_start(channel_id: i64, tool_id: &str, tool_name: &str, index: usize) -> Self {
+        Self::new(
+            EventType::StreamToolStart,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "tool_id": tool_id,
+                "tool_name": tool_name,
+                "index": index,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    /// Tool call arguments delta - incremental arguments JSON
+    pub fn stream_tool_delta(channel_id: i64, tool_id: &str, arguments_delta: &str, index: usize) -> Self {
+        Self::new(
+            EventType::StreamToolDelta,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "tool_id": tool_id,
+                "arguments_delta": arguments_delta,
+                "index": index
+            }),
+        )
+    }
+
+    /// Tool call complete - broadcast when tool call arguments are fully streamed
+    pub fn stream_tool_complete(
+        channel_id: i64,
+        tool_id: &str,
+        tool_name: &str,
+        arguments: &Value,
+        index: usize,
+    ) -> Self {
+        Self::new(
+            EventType::StreamToolComplete,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "tool_id": tool_id,
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "index": index,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    /// Thinking delta - incremental thinking/reasoning content (Claude)
+    pub fn stream_thinking_delta(channel_id: i64, content: &str) -> Self {
+        Self::new(
+            EventType::StreamThinkingDelta,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "content": content
+            }),
+        )
+    }
+
+    /// Stream ended - broadcast when streaming completes
+    pub fn stream_end(
+        channel_id: i64,
+        stop_reason: Option<&str>,
+        input_tokens: Option<u32>,
+        output_tokens: Option<u32>,
+    ) -> Self {
+        Self::new(
+            EventType::StreamEnd,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "stop_reason": stop_reason,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens
+                },
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    /// Stream error - broadcast when an error occurs during streaming
+    pub fn stream_error(channel_id: i64, error: &str, code: Option<&str>) -> Self {
+        Self::new(
+            EventType::StreamError,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "error": error,
+                "code": code,
                 "timestamp": chrono::Utc::now().to_rfc3339()
             }),
         )

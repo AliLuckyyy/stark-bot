@@ -41,8 +41,10 @@
 //! ```
 
 pub mod orchestrator;
+pub mod subagent_manager;
 pub mod tools;
 pub mod types;
 
 pub use orchestrator::{Orchestrator, ProcessResult};
-pub use types::{AgentContext, AgentMode};
+pub use subagent_manager::SubAgentManager;
+pub use types::{AgentContext, AgentMode, SubAgentContext, SubAgentStatus};

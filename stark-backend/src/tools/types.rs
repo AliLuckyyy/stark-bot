@@ -1,3 +1,5 @@
+use crate::ai::multi_agent::SubAgentManager;
+use crate::db::Database;
 use crate::gateway::events::EventBroadcaster;
 use crate::gateway::protocol::GatewayEvent;
 use crate::tools::register::RegisterStore;
@@ -317,6 +319,10 @@ pub struct ToolContext {
     /// Register store for passing data between tools safely
     /// This prevents hallucination of critical data (like tx params)
     pub registers: RegisterStore,
+    /// Database access for tools that need it (memory tools, etc.)
+    pub database: Option<Arc<Database>>,
+    /// SubAgent manager for spawning and managing sub-agents
+    pub subagent_manager: Option<Arc<SubAgentManager>>,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -331,6 +337,8 @@ impl std::fmt::Debug for ToolContext {
             .field("extra", &self.extra)
             .field("broadcaster", &self.broadcaster.is_some())
             .field("registers", &self.registers.keys())
+            .field("database", &self.database.is_some())
+            .field("subagent_manager", &self.subagent_manager.is_some())
             .finish()
     }
 }
@@ -347,6 +355,8 @@ impl Default for ToolContext {
             extra: HashMap::new(),
             broadcaster: None,
             registers: RegisterStore::new(),
+            database: None,
+            subagent_manager: None,
         }
     }
 }
@@ -416,6 +426,18 @@ impl ToolContext {
     /// Add a register store to the context (for passing data between tools safely)
     pub fn with_registers(mut self, registers: RegisterStore) -> Self {
         self.registers = registers;
+        self
+    }
+
+    /// Add database access to the context (for memory tools, etc.)
+    pub fn with_database(mut self, database: Arc<Database>) -> Self {
+        self.database = Some(database);
+        self
+    }
+
+    /// Add a SubAgentManager to the context (for spawning sub-agents)
+    pub fn with_subagent_manager(mut self, manager: Arc<SubAgentManager>) -> Self {
+        self.subagent_manager = Some(manager);
         self
     }
 

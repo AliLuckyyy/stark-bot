@@ -774,6 +774,46 @@ impl Database {
             [],
         )?;
 
+        // Sub-agents table - background agent execution tracking
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sub_agents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subagent_id TEXT UNIQUE NOT NULL,
+                parent_session_id INTEGER NOT NULL,
+                parent_channel_id INTEGER NOT NULL,
+                session_id INTEGER,
+                label TEXT NOT NULL,
+                task TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                model_override TEXT,
+                thinking_level TEXT,
+                timeout_secs INTEGER DEFAULT 300,
+                context TEXT,
+                result TEXT,
+                error TEXT,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                FOREIGN KEY (parent_session_id) REFERENCES chat_sessions(id),
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sub_agents_parent_session ON sub_agents(parent_session_id)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sub_agents_parent_channel ON sub_agents(parent_channel_id)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sub_agents_status ON sub_agents(status)",
+            [],
+        )?;
+
         // Migration: Add subtype column to agent_contexts if it doesn't exist
         let _ = conn.execute(
             "ALTER TABLE agent_contexts ADD COLUMN subtype TEXT NOT NULL DEFAULT 'finance'",

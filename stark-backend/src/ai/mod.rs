@@ -3,6 +3,7 @@ pub mod claude;
 pub mod llama;
 pub mod multi_agent;
 pub mod openai;
+pub mod streaming;
 pub mod types;
 
 pub use claude::ClaudeClient;

@@ -389,7 +389,8 @@ impl MessageDispatcher {
             .with_channel(message.channel_id, message.channel_type.clone())
             .with_user(message.user_id.clone())
             .with_workspace(workspace_dir.clone())
-            .with_broadcaster(self.broadcaster.clone());
+            .with_broadcaster(self.broadcaster.clone())
+            .with_database(self.db.clone());
 
         // Ensure workspace directory exists
         let _ = std::fs::create_dir_all(&workspace_dir);
@@ -939,10 +940,22 @@ impl MessageDispatcher {
             // If no tool calls, check if this is allowed
             if ai_response.tool_calls.is_empty() {
                 // Check if the agent should have called tools but didn't
-                if let Some(warning_msg) = orchestrator.check_tool_call_required() {
+                if let Some((warning_msg, attempt)) = orchestrator.check_tool_call_required() {
                     log::warn!(
-                        "[ORCHESTRATED_LOOP] Agent skipped tool calls, forcing back into loop"
+                        "[ORCHESTRATED_LOOP] Agent skipped tool calls (attempt {}/5), forcing back into loop",
+                        attempt
                     );
+
+                    // Broadcast warning to UI so user has visibility
+                    self.broadcaster.broadcast(GatewayEvent::agent_warning(
+                        original_message.channel_id,
+                        "no_tool_calls",
+                        &format!(
+                            "Agent tried to respond without calling tools (attempt {}/5). Forcing retry...",
+                            attempt
+                        ),
+                        attempt,
+                    ));
 
                     // Add a system message telling the agent to call tools
                     conversation.push(Message {
@@ -1434,7 +1447,41 @@ impl MessageDispatcher {
                         }
                         continue;
                     } else {
-                        // No tool call
+                        // No tool call - check if this is allowed
+                        if let Some((warning_msg, attempt)) = orchestrator.check_tool_call_required() {
+                            log::warn!(
+                                "[TEXT_ORCHESTRATED] Agent skipped tool calls (attempt {}/5), forcing back into loop",
+                                attempt
+                            );
+
+                            // Broadcast warning to UI so user has visibility
+                            self.broadcaster.broadcast(GatewayEvent::agent_warning(
+                                original_message.channel_id,
+                                "no_tool_calls",
+                                &format!(
+                                    "Agent tried to respond without calling tools (attempt {}/5). Forcing retry...",
+                                    attempt
+                                ),
+                                attempt,
+                            ));
+
+                            // Add messages to force tool calling
+                            conversation.push(Message {
+                                role: MessageRole::Assistant,
+                                content: agent_response.body.clone(),
+                            });
+                            conversation.push(Message {
+                                role: MessageRole::User,
+                                content: format!(
+                                    "[SYSTEM ERROR] {}\n\nYou MUST call tools to gather information. Do not respond with made-up data.",
+                                    warning_msg
+                                ),
+                            });
+
+                            // Continue the loop to force tool calling
+                            continue;
+                        }
+
                         if tool_call_log.is_empty() {
                             final_response = agent_response.body;
                         } else {

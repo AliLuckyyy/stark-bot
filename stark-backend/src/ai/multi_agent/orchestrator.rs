@@ -81,12 +81,13 @@ impl Orchestrator {
     }
 
     /// Check if the agent should have called tools but didn't
-    /// Returns an error message if tool calls were required but skipped
-    pub fn check_tool_call_required(&mut self) -> Option<String> {
-        // If we've already warned too many times, let it through to avoid infinite loop
-        if self.context.no_tool_warnings >= 2 {
-            log::warn!(
-                "[ORCHESTRATOR] Agent skipped tool calls {} times, allowing response to prevent loop",
+    /// Returns (error_message, warning_count) if tool calls were required but skipped
+    pub fn check_tool_call_required(&mut self) -> Option<(String, u32)> {
+        // If we've already warned too many times (5), let it through to avoid infinite loop
+        // But this is a serious failure - the agent is not following instructions
+        if self.context.no_tool_warnings >= 5 {
+            log::error!(
+                "[ORCHESTRATOR] CRITICAL: Agent skipped tool calls {} times! Allowing response to prevent infinite loop, but this indicates a serious problem.",
                 self.context.no_tool_warnings
             );
             return None;
@@ -96,19 +97,26 @@ impl Orchestrator {
         if self.context.actual_tool_calls == 0 && self.context.mode_iterations > 0 {
             self.context.no_tool_warnings += 1;
             log::warn!(
-                "[ORCHESTRATOR] Agent tried to respond without calling any tools (warning {})",
+                "[ORCHESTRATOR] Agent tried to respond without calling any tools (warning {}/5)",
                 self.context.no_tool_warnings
             );
 
-            return Some(format!(
-                "You must call actual tools before responding. You should:\n\
+            let message = format!(
+                "⚠️ WARNING {}/5: You MUST call actual tools before responding!\n\n\
+                You should:\n\
                 1. Use `use_skill` to load relevant skill instructions (e.g., 'local_wallet' for balance queries)\n\
                 2. Use lookup tools like `token_lookup` for token info\n\
-                3. Use `read_file` or `list_files` to explore files\n\n\
-                Do NOT fabricate or assume data. Call the appropriate tools to get real information.\n\
+                3. Use `x402_rpc` or `web3_function_call` for blockchain data\n\
+                4. Use `read_file` or `list_files` to explore files\n\n\
+                ❌ Do NOT fabricate, guess, or assume data.\n\
+                ❌ Do NOT respond with made-up balances or addresses.\n\
+                ✅ Call the appropriate tools to get REAL information.\n\n\
                 Original request: {}",
+                self.context.no_tool_warnings,
                 self.context.original_request
-            ));
+            );
+
+            return Some((message, self.context.no_tool_warnings));
         }
 
         None
