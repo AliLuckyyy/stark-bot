@@ -123,6 +123,31 @@ impl TaskQueue {
     pub fn is_empty(&self) -> bool {
         self.tasks.is_empty()
     }
+
+    /// Delete a task by ID. Returns true if the task was found and deleted.
+    /// If the deleted task was the current one (in_progress), clears current_task_idx.
+    pub fn delete_task(&mut self, task_id: u32) -> bool {
+        if let Some(idx) = self.tasks.iter().position(|t| t.id == task_id) {
+            // If deleting the current task, clear the index
+            if self.current_task_idx == Some(idx) {
+                self.current_task_idx = None;
+            } else if let Some(curr_idx) = self.current_task_idx {
+                // If deleting a task before the current one, adjust the index
+                if idx < curr_idx {
+                    self.current_task_idx = Some(curr_idx - 1);
+                }
+            }
+            self.tasks.remove(idx);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get a task by ID
+    pub fn get_task(&self, task_id: u32) -> Option<&PlannerTask> {
+        self.tasks.iter().find(|t| t.id == task_id)
+    }
 }
 
 /// The specialized mode/persona of the agent

@@ -163,6 +163,9 @@ async fn reset_session(
     }
     let session_id = path.into_inner();
 
+    // Clear any tasks associated with this session
+    data.execution_tracker.clear_tasks_for_session(session_id);
+
     match data.db.reset_chat_session(session_id) {
         Ok(session) => {
             let response: ChatSessionResponse = session.into();
@@ -256,6 +259,9 @@ async fn delete_session(
         0
     };
 
+    // Clear any tasks associated with this session
+    data.execution_tracker.clear_tasks_for_session(session_id);
+
     // Now delete the session
     match data.db.delete_chat_session(session_id) {
         Ok(true) => HttpResponse::Ok().json(serde_json::json!({
@@ -322,6 +328,9 @@ async fn stop_session(
     // Also cancel execution tracker
     data.execution_tracker.cancel_execution(channel_id);
     data.execution_tracker.cancel_all_sessions_for_channel(channel_id);
+
+    // Clear any tasks associated with this session
+    data.execution_tracker.clear_tasks_for_session(session_id);
 
     // Update completion status to cancelled
     if let Err(e) = data.db.update_session_completion_status(session_id, CompletionStatus::Cancelled) {

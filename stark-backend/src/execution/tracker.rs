@@ -26,6 +26,8 @@ pub struct ExecutionTracker {
     cancelled_sessions: DashMap<i64, bool>,
     /// Cancellation tokens per session
     session_cancellation_tokens: DashMap<i64, CancellationToken>,
+    /// Pending task deletions per channel (task IDs to delete)
+    pending_task_deletions: DashMap<i64, Vec<u32>>,
 }
 
 impl ExecutionTracker {
@@ -40,6 +42,7 @@ impl ExecutionTracker {
             session_executions: DashMap::new(),
             cancelled_sessions: DashMap::new(),
             session_cancellation_tokens: DashMap::new(),
+            pending_task_deletions: DashMap::new(),
         }
     }
 
@@ -118,6 +121,11 @@ impl ExecutionTracker {
         // Create the execution using the normal method
         let execution_id = self.start_execution(channel_id, mode, user_message);
 
+        // Set the session_id on the root execution task
+        if let Some(mut task) = self.tasks.get_mut(&execution_id) {
+            task.session_id = Some(session_id);
+        }
+
         // Also track by session_id for session-based cancellation
         self.session_executions.insert(session_id, execution_id.clone());
 
@@ -191,6 +199,61 @@ impl ExecutionTracker {
         for session_id in sessions_to_cancel {
             self.cancel_execution_for_session(session_id);
         }
+    }
+
+    /// Clear all tasks associated with a session
+    /// Called when a session is stopped, reset, or deleted
+    pub fn clear_tasks_for_session(&self, session_id: i64) {
+        log::info!("[EXECUTION_TRACKER] Clearing tasks for session {}", session_id);
+
+        // Find and remove all tasks associated with this session
+        let task_ids_to_remove: Vec<String> = self.tasks
+            .iter()
+            .filter(|entry| entry.value().session_id == Some(session_id))
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        let count = task_ids_to_remove.len();
+        for task_id in task_ids_to_remove {
+            self.tasks.remove(&task_id);
+        }
+
+        // Also remove the session execution mapping
+        self.session_executions.remove(&session_id);
+
+        if count > 0 {
+            log::info!("[EXECUTION_TRACKER] Cleared {} task(s) for session {}", count, session_id);
+        }
+    }
+
+    // =====================================================
+    // Planner Task Deletion (for task queue management)
+    // =====================================================
+
+    /// Queue a planner task for deletion
+    /// The dispatcher will check this and remove the task from the queue
+    pub fn queue_task_deletion(&self, channel_id: i64, task_id: u32) {
+        log::info!("[EXECUTION_TRACKER] Queuing deletion of task {} for channel {}", task_id, channel_id);
+        self.pending_task_deletions
+            .entry(channel_id)
+            .or_insert_with(Vec::new)
+            .push(task_id);
+    }
+
+    /// Get and clear pending task deletions for a channel
+    pub fn take_pending_task_deletions(&self, channel_id: i64) -> Vec<u32> {
+        self.pending_task_deletions
+            .remove(&channel_id)
+            .map(|(_, v)| v)
+            .unwrap_or_default()
+    }
+
+    /// Check if there are pending task deletions for a channel
+    pub fn has_pending_task_deletions(&self, channel_id: i64) -> bool {
+        self.pending_task_deletions
+            .get(&channel_id)
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
     }
 
     /// Start a new execution for a channel
@@ -286,6 +349,13 @@ impl ExecutionTracker {
 
         if let Some(form) = active_form {
             task.active_form = Some(form.to_string());
+        }
+
+        // Inherit session_id from parent task (usually the execution root)
+        if let Some(pid) = parent_id {
+            if let Some(parent) = self.tasks.get(pid) {
+                task.session_id = parent.session_id;
+            }
         }
 
         task.start();

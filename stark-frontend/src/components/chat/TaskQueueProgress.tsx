@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
-import { CheckCircle, Circle, Loader2, ListChecks } from 'lucide-react';
+import { CheckCircle, Circle, Loader2, ListChecks, X } from 'lucide-react';
 import clsx from 'clsx';
 import { useGateway } from '@/hooks/useGateway';
+import { deletePlannerTask } from '@/lib/api';
 import type { PlannerTask, TaskQueueUpdateEvent, TaskStatusChangeEvent } from '@/types';
 
 // Web channel ID - must match backend WEB_CHANNEL_ID
@@ -21,7 +22,30 @@ interface TaskQueueProgressProps {
 export default function TaskQueueProgress({ className }: TaskQueueProgressProps) {
   const [tasks, setTasks] = useState<PlannerTask[]>([]);
   const [visible, setVisible] = useState(false);
+  const [deletingTaskId, setDeletingTaskId] = useState<number | null>(null);
   const { on, off } = useGateway();
+
+  // Handle task deletion
+  const handleDeleteTask = useCallback(async (taskId: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (deletingTaskId !== null) return; // Already deleting
+
+    setDeletingTaskId(taskId);
+    try {
+      const result = await deletePlannerTask(taskId);
+      if (result.success) {
+        // Optimistically remove the task from local state
+        // The backend will also broadcast a task_queue_update event
+        setTasks((prev) => prev.filter((t) => t.id !== taskId));
+      } else {
+        console.error('[TaskQueueProgress] Failed to delete task:', result.error);
+      }
+    } catch (error) {
+      console.error('[TaskQueueProgress] Error deleting task:', error);
+    } finally {
+      setDeletingTaskId(null);
+    }
+  }, [deletingTaskId]);
 
   // Handle full task queue update
   const handleTaskQueueUpdate = useCallback((data: unknown) => {
@@ -129,7 +153,7 @@ export default function TaskQueueProgress({ className }: TaskQueueProgressProps)
           <div
             key={task.id}
             className={clsx(
-              'flex items-start gap-2 text-sm py-1 px-2 rounded',
+              'flex items-start gap-2 text-sm py-1 px-2 rounded group',
               task.status === 'in_progress' && 'bg-cyan-500/10 border border-cyan-500/30',
               task.status === 'completed' && 'opacity-60'
             )}
@@ -149,6 +173,26 @@ export default function TaskQueueProgress({ className }: TaskQueueProgressProps)
                 {task.id}. {task.description}
               </span>
             </div>
+            {/* Delete button - show on hover, hide for completed tasks */}
+            {task.status !== 'completed' && (
+              <button
+                onClick={(e) => handleDeleteTask(task.id, e)}
+                disabled={deletingTaskId === task.id}
+                className={clsx(
+                  'shrink-0 p-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity',
+                  'hover:bg-red-500/20 hover:text-red-400',
+                  'focus:outline-none focus:ring-1 focus:ring-red-500/50',
+                  deletingTaskId === task.id && 'opacity-100 cursor-wait'
+                )}
+                title="Delete task"
+              >
+                {deletingTaskId === task.id ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-slate-400" />
+                ) : (
+                  <X className="w-4 h-4 text-slate-500 hover:text-red-400" />
+                )}
+              </button>
+            )}
           </div>
         ))}
       </div>

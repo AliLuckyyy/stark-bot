@@ -494,12 +494,15 @@ impl Tool for ExecTool {
             .stderr(Stdio::piped());
 
         // Set environment variables from context (API keys)
+        // Track which keys are available for diagnostic output
+        let mut available_env_vars: Vec<String> = Vec::new();
         for key_id in ApiKeyId::all() {
             if let Some(value) = context.get_api_key_by_id(key_id) {
                 // Set all configured env vars for this key
                 if let Some(env_vars) = key_id.env_vars() {
                     for env_var in env_vars {
                         cmd.env(env_var, &value);
+                        available_env_vars.push(env_var.to_string());
                     }
                 }
 
@@ -569,10 +572,45 @@ impl Tool for ExecTool {
         }
 
         if result_text.is_empty() {
-            result_text = if success {
-                format!("Command completed successfully (exit code: {})", exit_code)
+            // Provide diagnostic info when there's no output
+            let env_info = if available_env_vars.is_empty() {
+                "None configured".to_string()
             } else {
-                format!("Command failed with exit code: {}", exit_code)
+                available_env_vars.join(", ")
+            };
+
+            result_text = if success {
+                format!(
+                    "Command completed successfully (exit code: {})\n\n\
+                    --- Diagnostics (no stdout/stderr) ---\n\
+                    Command: {}\n\
+                    Working dir: {}\n\
+                    Duration: {}ms\n\
+                    Available env vars: {}\n\n\
+                    Tip: If you expected output, check:\n\
+                    - API/auth tokens are configured in Settings > API Keys\n\
+                    - The command isn't using -f (silent fail) flag\n\
+                    - The API didn't return an empty response",
+                    exit_code,
+                    params.command,
+                    working_dir.display(),
+                    duration_ms,
+                    env_info
+                )
+            } else {
+                format!(
+                    "Command failed with exit code: {}\n\n\
+                    --- Diagnostics (no stdout/stderr) ---\n\
+                    Command: {}\n\
+                    Working dir: {}\n\
+                    Duration: {}ms\n\
+                    Available env vars: {}",
+                    exit_code,
+                    params.command,
+                    working_dir.display(),
+                    duration_ms,
+                    env_info
+                )
             };
         }
 

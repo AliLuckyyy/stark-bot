@@ -343,6 +343,22 @@ impl Orchestrator {
     pub fn task_queue(&self) -> &super::types::TaskQueue {
         &self.context.task_queue
     }
+
+    /// Delete a task by ID. Returns true if the task was found and deleted.
+    /// Also returns whether the deleted task was the current one.
+    pub fn delete_task(&mut self, task_id: u32) -> (bool, bool) {
+        let was_current = self.context.task_queue
+            .current_task()
+            .map(|t| t.id == task_id)
+            .unwrap_or(false);
+        let deleted = self.context.task_queue.delete_task(task_id);
+        (deleted, was_current)
+    }
+
+    /// Get a task by ID
+    pub fn get_task(&self, task_id: u32) -> Option<&super::types::PlannerTask> {
+        self.context.task_queue.get_task(task_id)
+    }
 }
 
 /// Result of processing a tool call

@@ -85,12 +85,27 @@ pub struct SubagentListResponse {
     pub subagents: Vec<SubagentInfo>,
 }
 
+/// Response for task deletion
+#[derive(Serialize)]
+pub struct DeleteTaskResponse {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Whether the deleted task was the currently active one
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub was_current_task: Option<bool>,
+}
+
 pub fn config(cfg: &mut web::ServiceConfig) {
     cfg.service(web::resource("/api/chat").route(web::post().to(chat)))
         .service(web::resource("/api/chat/stop").route(web::post().to(stop_execution)))
         .service(web::resource("/api/chat/execution-status").route(web::get().to(get_execution_status)))
         .service(web::resource("/api/chat/subagents").route(web::get().to(list_subagents)))
         .service(web::resource("/api/chat/subagents/cancel").route(web::post().to(cancel_subagent)))
+        // Task management for planner tasks
+        .service(web::resource("/api/chat/tasks/{task_id}").route(web::delete().to(delete_task)))
         // Session management for web channel
         .service(web::resource("/api/chat/session").route(web::get().to(get_web_session)))
         .service(web::resource("/api/chat/session/new").route(web::post().to(new_web_session)));
@@ -442,6 +457,60 @@ async fn cancel_subagent(
             error: Some("Subagent manager not available".to_string()),
         })
     }
+}
+
+/// Delete a planner task by ID
+async fn delete_task(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<u32>,
+) -> impl Responder {
+    // Validate session token
+    let token = req
+        .headers()
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.trim_start_matches("Bearer ").to_string());
+
+    let token = match token {
+        Some(t) => t,
+        None => {
+            return HttpResponse::Unauthorized().json(DeleteTaskResponse {
+                success: false,
+                message: None,
+                error: Some("No authorization token provided".to_string()),
+                was_current_task: None,
+            });
+        }
+    };
+
+    // Validate the session
+    if state.db.validate_session(&token).ok().flatten().is_none() {
+        return HttpResponse::Unauthorized().json(DeleteTaskResponse {
+            success: false,
+            message: None,
+            error: Some("Invalid or expired session".to_string()),
+            was_current_task: None,
+        });
+    }
+
+    let task_id = path.into_inner();
+    log::info!("[CHAT] Deleting planner task {} for web channel", task_id);
+
+    // Queue the task deletion - the dispatcher will handle it during the next checkpoint
+    state.execution_tracker.queue_task_deletion(WEB_CHANNEL_ID, task_id);
+
+    // If there's an active execution, we need to signal the dispatcher to check for deletions
+    // The execution loop will pick up the deletion on its next iteration
+    // If the deleted task is the current one, we should also stop the execution
+    // For now, we'll just queue the deletion and let the frontend show it as deleted
+
+    HttpResponse::Ok().json(DeleteTaskResponse {
+        success: true,
+        message: Some(format!("Task {} queued for deletion", task_id)),
+        error: None,
+        was_current_task: None, // We don't know until dispatcher processes it
+    })
 }
 
 /// Response for web session endpoints

@@ -10,6 +10,8 @@ pub struct ExecutionTask {
     pub parent_id: Option<String>,
     /// Channel ID this task belongs to
     pub channel_id: i64,
+    /// Session ID this task belongs to (for session-scoped cleanup)
+    pub session_id: Option<i64>,
     /// Type of task
     pub task_type: TaskType,
     /// Human-readable description (e.g., "Reading Plan(~/.claude/plans/example.md)")
@@ -40,6 +42,7 @@ impl ExecutionTask {
             id: uuid::Uuid::new_v4().to_string(),
             parent_id,
             channel_id,
+            session_id: None,
             task_type,
             description: description.into(),
             active_form: None,
@@ -49,6 +52,12 @@ impl ExecutionTask {
             completed_at: None,
             metrics: TaskMetrics::default(),
         }
+    }
+
+    /// Set the session ID for this task
+    pub fn with_session_id(mut self, session_id: i64) -> Self {
+        self.session_id = Some(session_id);
+        self
     }
 
     /// Set the active form (present continuous) for display

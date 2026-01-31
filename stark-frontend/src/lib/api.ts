@@ -988,6 +988,18 @@ export async function getExecutionStatus(): Promise<ExecutionStatusResponse> {
   return apiFetch('/chat/execution-status');
 }
 
+// Task Queue API
+export interface DeleteTaskResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+  was_current_task?: boolean;
+}
+
+export async function deletePlannerTask(taskId: number): Promise<DeleteTaskResponse> {
+  return apiFetch(`/chat/tasks/${taskId}`, { method: 'DELETE' });
+}
+
 // Subagent API
 // Types imported from shared subagent-types.ts which matches Rust SubAgentStatus enum
 import { Subagent, SubagentStatus } from '@/lib/subagent-types';

@@ -1104,6 +1104,48 @@ impl MessageDispatcher {
                 break;
             }
 
+            // Check for pending task deletions
+            let pending_deletions = self.execution_tracker.take_pending_task_deletions(original_message.channel_id);
+            for task_id in pending_deletions {
+                let (deleted, was_current) = orchestrator.delete_task(task_id);
+                if deleted {
+                    log::info!("[ORCHESTRATED_LOOP] Deleted task {}", task_id);
+                    // Broadcast the updated task queue
+                    self.broadcast_task_queue_update(original_message.channel_id, orchestrator);
+
+                    // If we deleted the current task, move to the next one
+                    if was_current {
+                        log::info!("[ORCHESTRATED_LOOP] Deleted task was the current task, moving to next");
+                        // Pop next task if available
+                        if let Some(next_task) = orchestrator.pop_next_task() {
+                            log::info!(
+                                "[ORCHESTRATED_LOOP] Starting next task after deletion: {} - {}",
+                                next_task.id,
+                                next_task.description
+                            );
+                            self.broadcast_task_status_change(
+                                original_message.channel_id,
+                                next_task.id,
+                                "in_progress",
+                                &next_task.description,
+                            );
+                            self.broadcast_task_queue_update(original_message.channel_id, orchestrator);
+                        } else if orchestrator.task_queue_is_empty() || orchestrator.all_tasks_complete() {
+                            // No more tasks, complete the session
+                            log::info!("[ORCHESTRATED_LOOP] No more tasks after deletion, completing session");
+                            orchestrator_complete = true;
+                            if let Err(e) = self.db.update_session_completion_status(session_id, CompletionStatus::Complete) {
+                                log::error!("[ORCHESTRATED_LOOP] Failed to update session completion status: {}", e);
+                            }
+                            self.broadcast_session_complete(original_message.channel_id, session_id);
+                            break;
+                        }
+                    }
+                } else {
+                    log::warn!("[ORCHESTRATED_LOOP] Task {} not found for deletion", task_id);
+                }
+            }
+
             // Check if session was marked as complete (defensive check against infinite loops)
             // This catches cases where task_fully_completed was called but the loop didn't break
             if let Ok(Some(status)) = self.db.get_session_completion_status(session_id) {
@@ -1587,11 +1629,17 @@ impl MessageDispatcher {
                             }
                         }
 
+                        // Extract duration_ms from metadata if available
+                        let duration_ms = result.metadata.as_ref()
+                            .and_then(|m| m.get("duration_ms"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+
                         self.broadcaster.broadcast(GatewayEvent::tool_result(
                             original_message.channel_id,
                             &call.name,
                             result.success,
-                            0,
+                            duration_ms,
                             &result.content,
                         ));
 
@@ -2026,11 +2074,17 @@ impl MessageDispatcher {
                                     }
                                 }
 
+                                // Extract duration_ms from metadata if available
+                                let duration_ms = result.metadata.as_ref()
+                                    .and_then(|m| m.get("duration_ms"))
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0);
+
                                 self.broadcaster.broadcast(GatewayEvent::tool_result(
                                     original_message.channel_id,
                                     &tool_call.tool_name,
                                     result.success,
-                                    0,
+                                    duration_ms,
                                     &result.content,
                                 ));
 
