@@ -37,6 +37,7 @@ fn register_all_tools(registry: &mut ToolRegistry) {
     // Finance tools (crypto/DeFi operations)
     registry.register(Arc::new(builtin::X402RpcTool::new()));
     registry.register(Arc::new(builtin::X402FetchTool::new()));
+    registry.register(Arc::new(builtin::X402AgentInvokeTool::new()));
     registry.register(Arc::new(builtin::Web3TxTool::new()));
     registry.register(Arc::new(builtin::Web3FunctionCallTool::new()));
     registry.register(Arc::new(builtin::TokenLookupTool::new()));
