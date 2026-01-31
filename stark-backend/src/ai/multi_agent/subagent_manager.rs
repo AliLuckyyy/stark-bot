@@ -343,6 +343,8 @@ impl SubAgentManager {
         let max_iterations = 15; // Sub-agents get fewer iterations
         let mut tool_history: Vec<ToolHistoryEntry> = Vec::new();
         let mut final_response = String::new();
+        let mut client_error_retries = 0;
+        const MAX_CLIENT_ERROR_RETRIES: u32 = 2;
 
         for iteration in 0..max_iterations {
             log::debug!(
@@ -352,10 +354,47 @@ impl SubAgentManager {
             );
 
             // Generate response
-            let response = client
+            let response = match client
                 .generate_with_tools(messages.clone(), tool_history.clone(), tools.clone())
                 .await
-                .map_err(|e| format!("AI generation failed: {}", e))?;
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    // Check if this is a client error (4xx) that the AI might be able to recover from
+                    if e.is_client_error() && client_error_retries < MAX_CLIENT_ERROR_RETRIES {
+                        client_error_retries += 1;
+
+                        if e.is_context_too_large() {
+                            log::warn!(
+                                "[SUBAGENT] {} context too large (retry {}/{}), clearing tool history ({} entries)",
+                                context.id,
+                                client_error_retries,
+                                MAX_CLIENT_ERROR_RETRIES,
+                                tool_history.len()
+                            );
+                            let recovery_entry = crate::ai::types::handle_context_overflow(
+                                &mut tool_history,
+                                &iteration.to_string(),
+                            );
+                            tool_history.push(recovery_entry);
+                            continue;
+                        }
+
+                        // Other client errors - add guidance but don't clear history
+                        log::warn!(
+                            "[SUBAGENT] {} got client error (retry {}/{}): {}",
+                            context.id,
+                            client_error_retries,
+                            MAX_CLIENT_ERROR_RETRIES,
+                            e
+                        );
+                        tool_history.push(crate::ai::types::create_error_feedback(&e, &iteration.to_string()));
+                        continue;
+                    }
+
+                    return Err(format!("AI generation failed: {}", e));
+                }
+            };
 
             // Check if we have tool calls
             if response.tool_calls.is_empty() {

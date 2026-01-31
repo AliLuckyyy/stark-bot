@@ -26,14 +26,14 @@ If not configured, ask the user to get one from https://bankr.bot/api (enable "A
 
 ```bash
 PROMPT='USER_PROMPT_HERE' && \
-JOB_ID=$(curl -sf -X POST "https://api.bankr.bot/agent/prompt" \
+JOB_ID=$(curl -sS -X POST "https://api.bankr.bot/agent/prompt" \
   -H "X-API-Key: $BANKR_API_KEY" \
   -H "Content-Type: application/json" \
   -d "{\"prompt\": \"$PROMPT\"}" | jq -r '.jobId') && \
 echo "Job submitted: $JOB_ID" && \
 for i in {1..30}; do \
   sleep 3; \
-  RESULT=$(curl -sf "https://api.bankr.bot/agent/job/$JOB_ID" -H "X-API-Key: $BANKR_API_KEY"); \
+  RESULT=$(curl -sS "https://api.bankr.bot/agent/job/$JOB_ID" -H "X-API-Key: $BANKR_API_KEY"); \
   STATUS=$(echo "$RESULT" | jq -r '.status'); \
   echo "Poll $i: $STATUS"; \
   if [ "$STATUS" = "completed" ]; then \
@@ -61,14 +61,14 @@ Call `exec` tool with parameters:
 
 ```bash
 PROMPT='buy 1 $starkbot' && \
-JOB_ID=$(curl -sf -X POST "https://api.bankr.bot/agent/prompt" \
+JOB_ID=$(curl -sS -X POST "https://api.bankr.bot/agent/prompt" \
   -H "X-API-Key: $BANKR_API_KEY" \
   -H "Content-Type: application/json" \
   -d "{\"prompt\": \"$PROMPT\"}" | jq -r '.jobId') && \
 echo "Job submitted: $JOB_ID" && \
 for i in {1..30}; do \
   sleep 3; \
-  RESULT=$(curl -sf "https://api.bankr.bot/agent/job/$JOB_ID" -H "X-API-Key: $BANKR_API_KEY"); \
+  RESULT=$(curl -sS "https://api.bankr.bot/agent/job/$JOB_ID" -H "X-API-Key: $BANKR_API_KEY"); \
   STATUS=$(echo "$RESULT" | jq -r '.status'); \
   echo "Poll $i: $STATUS"; \
   if [ "$STATUS" = "completed" ]; then \

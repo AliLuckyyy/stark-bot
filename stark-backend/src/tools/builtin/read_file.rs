@@ -14,6 +14,9 @@ const INTRINSIC_FILES: &[(&str, &str)] = &[
     ("SOUL.md", "SOUL.md"),
 ];
 
+/// Maximum output size in characters to prevent context bloat
+const MAX_OUTPUT_SIZE: usize = 12000;
+
 /// Read file tool - reads contents of files within a sandboxed directory
 pub struct ReadFileTool {
     definition: ToolDefinition,
@@ -204,7 +207,7 @@ impl Tool for ReadFileTool {
         let result = selected_lines.join("\n");
         let truncated = end < total_lines;
 
-        let output = if truncated {
+        let mut output = if truncated {
             format!(
                 "{}\n\n[Showing lines {}-{} of {}. Use offset parameter to read more.]",
                 result,
@@ -215,6 +218,13 @@ impl Tool for ReadFileTool {
         } else {
             result
         };
+
+        // Truncate if output is too large to prevent context bloat
+        let size_truncated = output.len() > MAX_OUTPUT_SIZE;
+        if size_truncated {
+            output.truncate(MAX_OUTPUT_SIZE);
+            output.push_str("\n\n⚠️ [Output truncated due to size - use offset/max_lines for smaller chunks]");
+        }
 
         ToolResult::success(output).with_metadata(json!({
             "path": params.path,

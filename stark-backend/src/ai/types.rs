@@ -1,6 +1,76 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fmt;
 use crate::x402::X402PaymentInfo;
+
+/// AI API error with status code information
+#[derive(Debug, Clone)]
+pub struct AiError {
+    /// Error message
+    pub message: String,
+    /// HTTP status code if available
+    pub status_code: Option<u16>,
+}
+
+impl AiError {
+    pub fn new(message: impl Into<String>) -> Self {
+        AiError {
+            message: message.into(),
+            status_code: None,
+        }
+    }
+
+    pub fn with_status(message: impl Into<String>, status_code: u16) -> Self {
+        AiError {
+            message: message.into(),
+            status_code: Some(status_code),
+        }
+    }
+
+    /// Check if this is a client error (4xx status code)
+    /// These errors indicate something wrong with the request that the AI might be able to fix
+    pub fn is_client_error(&self) -> bool {
+        self.status_code.map(|c| c >= 400 && c < 500).unwrap_or(false)
+    }
+
+    /// Check if this is a server error (5xx status code)
+    pub fn is_server_error(&self) -> bool {
+        self.status_code.map(|c| c >= 500).unwrap_or(false)
+    }
+
+    /// Check if this error indicates the context/input is too large
+    pub fn is_context_too_large(&self) -> bool {
+        let msg = self.message.to_lowercase();
+        msg.contains("too large")
+            || msg.contains("exceeds maximum")
+            || msg.contains("input tokens")
+            || msg.contains("context length")
+    }
+}
+
+impl fmt::Display for AiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(code) = self.status_code {
+            write!(f, "[HTTP {}] {}", code, self.message)
+        } else {
+            write!(f, "{}", self.message)
+        }
+    }
+}
+
+impl std::error::Error for AiError {}
+
+impl From<String> for AiError {
+    fn from(s: String) -> Self {
+        AiError::new(s)
+    }
+}
+
+impl From<&str> for AiError {
+    fn from(s: &str) -> Self {
+        AiError::new(s)
+    }
+}
 
 /// Thinking level for Claude extended thinking
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -128,6 +198,76 @@ impl ToolHistoryEntry {
             tool_responses,
         }
     }
+}
+
+/// Handle context overflow by clearing tool history and creating a recovery entry.
+/// Returns a ToolHistoryEntry with a summary of cleared work and recovery guidance.
+pub fn handle_context_overflow(
+    tool_history: &mut Vec<ToolHistoryEntry>,
+    iteration_id: &str,
+) -> ToolHistoryEntry {
+    // Build a summary of what was accomplished before clearing
+    let work_summary: Vec<String> = tool_history
+        .iter()
+        .flat_map(|entry| entry.tool_calls.iter())
+        .map(|tc| format!("- {} ({})", tc.name, tc.id))
+        .collect();
+
+    let cleared_count = work_summary.len();
+
+    // Clear the tool history to reduce context
+    tool_history.clear();
+
+    // Create recovery guidance
+    let recovery_guidance = format!(
+        "CONTEXT OVERFLOW: The previous context exceeded the model's token limit.\n\n\
+         Work completed before reset:\n{}\n\n\
+         The tool history has been cleared to allow you to continue.\n\
+         Please proceed with a more focused approach - read smaller portions of files and be more selective.",
+        if work_summary.is_empty() {
+            "None".to_string()
+        } else {
+            work_summary.join("\n")
+        }
+    );
+
+    ToolHistoryEntry::new(
+        vec![ToolCall {
+            id: format!("context_reset_{}", iteration_id),
+            name: "system_feedback".to_string(),
+            arguments: serde_json::json!({"type": "context_overflow", "cleared_entries": cleared_count}),
+        }],
+        vec![ToolResponse {
+            tool_call_id: format!("context_reset_{}", iteration_id),
+            content: recovery_guidance,
+            is_error: true,
+        }],
+    )
+}
+
+/// Create a simple error feedback entry for non-context-overflow errors
+pub fn create_error_feedback(
+    error: &AiError,
+    iteration_id: &str,
+) -> ToolHistoryEntry {
+    let error_guidance = format!(
+        "ERROR: The AI API returned an error: \"{}\"\n\n\
+         Please adjust your approach and try again.",
+        error
+    );
+
+    ToolHistoryEntry::new(
+        vec![ToolCall {
+            id: format!("api_error_{}", iteration_id),
+            name: "system_feedback".to_string(),
+            arguments: serde_json::json!({"type": "api_error", "status_code": error.status_code}),
+        }],
+        vec![ToolResponse {
+            tool_call_id: format!("api_error_{}", iteration_id),
+            content: error_guidance,
+            is_error: true,
+        }],
+    )
 }
 
 /// Unified AI response that can contain both text and tool calls

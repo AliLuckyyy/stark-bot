@@ -398,12 +398,12 @@ impl Tool for GrepTool {
 
         match result {
             Ok(output) => {
-                // Truncate if too long
-                let max_output = 30000;
+                // Truncate if too long (keep small to avoid context bloat)
+                let max_output = 12000;
                 if output.len() > max_output {
                     let truncated = &output[..max_output];
                     ToolResult::success(format!(
-                        "{}\n\n[Output truncated. {} more characters not shown.]",
+                        "{}\n\n[Output truncated. {} more characters not shown. Use more specific patterns.]",
                         truncated,
                         output.len() - max_output
                     ))

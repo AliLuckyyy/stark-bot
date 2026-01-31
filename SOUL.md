@@ -1,4 +1,5 @@
-# SOUL.md - StarkBot Identity
+
+
 
 # SOUL.md - StarkBot Identity
 

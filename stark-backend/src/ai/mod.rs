@@ -11,8 +11,8 @@ pub use llama::{LlamaClient, LlamaMessage};
 pub use openai::OpenAIClient;
 pub use archetypes::{ArchetypeId, ArchetypeRegistry, ModelArchetype};
 pub use types::{
-    AiResponse, ClaudeMessage as TypedClaudeMessage, ThinkingLevel, ToolCall, ToolHistoryEntry,
-    ToolResponse,
+    AiError, AiResponse, ClaudeMessage as TypedClaudeMessage, ThinkingLevel, ToolCall,
+    ToolHistoryEntry, ToolResponse,
 };
 
 use crate::gateway::events::EventBroadcaster;
@@ -154,7 +154,7 @@ impl AiClient {
         messages: Vec<Message>,
         tool_history: Vec<ToolHistoryEntry>,
         tools: Vec<ToolDefinition>,
-    ) -> Result<AiResponse, String> {
+    ) -> Result<AiResponse, AiError> {
         match self {
             AiClient::Claude(client) => {
                 // Convert tool history to Claude format
@@ -176,6 +176,7 @@ impl AiClient {
                 client
                     .generate_with_tools(messages, tool_messages, tools)
                     .await
+                    .map_err(AiError::from)
             }
         }
     }

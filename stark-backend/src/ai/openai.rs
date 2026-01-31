@@ -1,5 +1,5 @@
 use crate::ai::streaming::{StreamEvent, StreamSender};
-use crate::ai::types::{AiResponse, ToolCall};
+use crate::ai::types::{AiError, AiResponse, ToolCall};
 use crate::ai::Message;
 use crate::gateway::events::EventBroadcaster;
 use crate::gateway::protocol::GatewayEvent;
@@ -263,13 +263,15 @@ impl OpenAIClient {
     }
 
     pub async fn generate_text(&self, messages: Vec<Message>) -> Result<String, String> {
-        let response = self.generate_with_tools_internal(messages, vec![], vec![]).await?;
+        let response = self.generate_with_tools_internal(messages, vec![], vec![]).await
+            .map_err(|e| e.to_string())?;
         Ok(response.content)
     }
 
     /// Generate text and return payment info if x402 payment was made
     pub async fn generate_text_with_payment_info(&self, messages: Vec<Message>) -> Result<(String, Option<X402PaymentInfo>), String> {
-        let response = self.generate_with_tools_internal(messages, vec![], vec![]).await?;
+        let response = self.generate_with_tools_internal(messages, vec![], vec![]).await
+            .map_err(|e| e.to_string())?;
         Ok((response.content, response.x402_payment))
     }
 
@@ -278,7 +280,7 @@ impl OpenAIClient {
         messages: Vec<Message>,
         tool_history: Vec<OpenAIMessage>,
         tools: Vec<ToolDefinition>,
-    ) -> Result<AiResponse, String> {
+    ) -> Result<AiResponse, AiError> {
         self.generate_with_tools_internal(messages, tool_history, tools).await
     }
 
@@ -287,7 +289,7 @@ impl OpenAIClient {
         messages: Vec<Message>,
         tool_history: Vec<OpenAIMessage>,
         tools: Vec<ToolDefinition>,
-    ) -> Result<AiResponse, String> {
+    ) -> Result<AiResponse, AiError> {
         // Convert messages to OpenAI format
         let mut api_messages: Vec<OpenAIMessage> = messages
             .into_iter()
@@ -368,7 +370,7 @@ impl OpenAIClient {
         const MAX_RETRIES: u32 = 3;
         const BASE_DELAY_MS: u64 = 2000; // 2 seconds base delay
 
-        let mut last_error: Option<String> = None;
+        let mut last_error: Option<(String, Option<u16>)> = None;
         let mut x402_payment: Option<X402PaymentInfo> = None;
         let mut response_text: Option<String> = None;
 
@@ -388,7 +390,7 @@ impl OpenAIClient {
                     attempt,
                     MAX_RETRIES,
                     wait_secs,
-                    last_error.as_deref().unwrap_or("Unknown error"),
+                    last_error.as_ref().map(|(m, _)| m.as_str()).unwrap_or("Unknown error"),
                 );
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             }
@@ -415,12 +417,12 @@ impl OpenAIClient {
                 Ok(r) => r,
                 Err(e) => {
                     // Network errors are retryable
-                    last_error = Some(e.clone());
+                    last_error = Some((e.clone(), None));
                     if attempt < MAX_RETRIES {
                         log::warn!("[OPENAI] Request failed (attempt {}): {}, will retry", attempt + 1, e);
                         continue;
                     }
-                    return Err(e);
+                    return Err(AiError::new(e));
                 }
             };
 
@@ -452,38 +454,41 @@ impl OpenAIClient {
                         attempt + 1,
                         if error_text.len() > 200 { &error_text[..200] } else { &error_text }
                     );
-                    last_error = Some(format!("HTTP {}: {}", status, error_text));
+                    last_error = Some((format!("HTTP {}: {}", status, error_text), Some(status_code)));
                     continue;
                 }
 
-                if let Ok(error_response) = serde_json::from_str::<OpenAIErrorResponse>(&error_text) {
-                    return Err(format!("OpenAI API error: {}", error_response.error.message));
-                }
+                let error_msg = if let Ok(error_response) = serde_json::from_str::<OpenAIErrorResponse>(&error_text) {
+                    format!("OpenAI API error: {}", error_response.error.message)
+                } else {
+                    format!("OpenAI API returned error status: {}, body: {}", status, error_text)
+                };
 
-                return Err(format!(
-                    "OpenAI API returned error status: {}, body: {}",
-                    status, error_text
-                ));
+                return Err(AiError::with_status(error_msg, status_code));
             }
 
             // Success - read response body
             response_text = Some(response
                 .text()
                 .await
-                .map_err(|e| format!("Failed to read OpenAI response: {}", e))?);
+                .map_err(|e| AiError::new(format!("Failed to read OpenAI response: {}", e)))?);
             break;
         }
 
         // If we exhausted retries without success
         let response_text = response_text.ok_or_else(|| {
-            last_error.unwrap_or_else(|| "Max retries exceeded".to_string())
+            let (msg, code) = last_error.unwrap_or_else(|| ("Max retries exceeded".to_string(), None));
+            match code {
+                Some(c) => AiError::with_status(msg, c),
+                None => AiError::new(msg),
+            }
         })?;
 
         // Debug: Log raw response
         log::debug!("[OPENAI] Raw response:\n{}", response_text);
 
         let response_data: OpenAICompletionResponse = serde_json::from_str(&response_text)
-            .map_err(|e| format!("Failed to parse OpenAI response: {} - body: {}", e, response_text))?;
+            .map_err(|e| AiError::new(format!("Failed to parse OpenAI response: {} - body: {}", e, response_text)))?;
 
         let choice = response_data
             .choices

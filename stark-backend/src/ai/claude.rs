@@ -1,5 +1,5 @@
 use crate::ai::types::{
-    AiResponse, ClaudeContentBlock, ClaudeMessage as TypedClaudeMessage,
+    AiError, AiResponse, ClaudeContentBlock, ClaudeMessage as TypedClaudeMessage,
     ClaudeMessageContent, ClaudeTool, ThinkingLevel, ToolCall, ToolResponse,
 };
 use crate::ai::{Message, MessageRole};
@@ -353,7 +353,7 @@ impl ClaudeClient {
         messages: Vec<Message>,
         tool_messages: Vec<TypedClaudeMessage>,
         tools: Vec<ToolDefinition>,
-    ) -> Result<AiResponse, String> {
+    ) -> Result<AiResponse, AiError> {
         // Extract system message if present
         let mut system_message = None;
         let filtered_messages: Vec<Message> = messages
@@ -420,7 +420,7 @@ impl ClaudeClient {
         const MAX_RETRIES: u32 = 3;
         const BASE_DELAY_MS: u64 = 2000;
 
-        let mut last_error: Option<String> = None;
+        let mut last_error: Option<(String, Option<u16>)> = None;
         let mut response_data_opt: Option<ClaudeCompletionResponse> = None;
 
         for attempt in 0..=MAX_RETRIES {
@@ -438,7 +438,7 @@ impl ClaudeClient {
                     attempt,
                     MAX_RETRIES,
                     wait_secs,
-                    last_error.as_deref().unwrap_or("Unknown error"),
+                    last_error.as_ref().map(|(m, _)| m.as_str()).unwrap_or("Unknown error"),
                 );
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             }
@@ -453,12 +453,16 @@ impl ClaudeClient {
             let response = match request_result {
                 Ok(r) => r,
                 Err(e) => {
-                    last_error = Some(format!("Claude API request failed: {}", e));
+                    last_error = Some((format!("Claude API request failed: {}", e), None));
                     if attempt < MAX_RETRIES {
                         log::warn!("[CLAUDE] Tool request failed (attempt {}): {}, will retry", attempt + 1, e);
                         continue;
                     }
-                    return Err(last_error.unwrap());
+                    let (msg, code) = last_error.unwrap();
+                    return Err(match code {
+                        Some(c) => AiError::with_status(msg, c),
+                        None => AiError::new(msg),
+                    });
                 }
             };
 
@@ -486,29 +490,32 @@ impl ClaudeClient {
                         status,
                         attempt + 1
                     );
-                    last_error = Some(format!("HTTP {}: {}", status, error_text));
+                    last_error = Some((format!("HTTP {}: {}", status, error_text), Some(status_code)));
                     continue;
                 }
 
-                if let Ok(error_response) = serde_json::from_str::<ClaudeErrorResponse>(&error_text) {
-                    return Err(format!("Claude API error: {}", error_response.error.message));
-                }
+                let error_msg = if let Ok(error_response) = serde_json::from_str::<ClaudeErrorResponse>(&error_text) {
+                    format!("Claude API error: {}", error_response.error.message)
+                } else {
+                    format!("Claude API returned error status: {}, body: {}", status, error_text)
+                };
 
-                return Err(format!(
-                    "Claude API returned error status: {}, body: {}",
-                    status, error_text
-                ));
+                return Err(AiError::with_status(error_msg, status_code));
             }
 
             response_data_opt = Some(response
                 .json()
                 .await
-                .map_err(|e| format!("Failed to parse Claude response: {}", e))?);
+                .map_err(|e| AiError::new(format!("Failed to parse Claude response: {}", e)))?);
             break;
         }
 
         let response_data = response_data_opt.ok_or_else(|| {
-            last_error.unwrap_or_else(|| "Max retries exceeded".to_string())
+            let (msg, code) = last_error.unwrap_or_else(|| ("Max retries exceeded".to_string(), None));
+            match code {
+                Some(c) => AiError::with_status(msg, c),
+                None => AiError::new(msg),
+            }
         })?;
 
         // Parse the response content

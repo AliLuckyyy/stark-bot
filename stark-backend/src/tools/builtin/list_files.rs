@@ -13,6 +13,13 @@ const INTRINSIC_FILES: &[(&str, &str)] = &[
     ("SOUL.md", "Agent personality and behavior configuration"),
 ];
 
+/// Default maximum entries to return per page
+const DEFAULT_LIMIT: usize = 20;
+/// Maximum allowed limit
+const MAX_LIMIT: usize = 50;
+/// Maximum output size in bytes before truncation
+const MAX_OUTPUT_SIZE: usize = 4000;
+
 /// List files tool - lists directory contents within a sandboxed directory
 pub struct ListFilesTool {
     definition: ToolDefinition,
@@ -74,11 +81,39 @@ impl ListFilesTool {
                 enum_values: None,
             },
         );
+        properties.insert(
+            "limit".to_string(),
+            PropertySchema {
+                schema_type: "integer".to_string(),
+                description: format!(
+                    "Maximum number of entries to return (default: {}, max: {}). Use with offset for pagination.",
+                    DEFAULT_LIMIT, MAX_LIMIT
+                ),
+                default: Some(json!(DEFAULT_LIMIT)),
+                items: None,
+                enum_values: None,
+            },
+        );
+        properties.insert(
+            "offset".to_string(),
+            PropertySchema {
+                schema_type: "integer".to_string(),
+                description: "Number of entries to skip for pagination (default: 0). Use 'next_offset' from previous response to get next page.".to_string(),
+                default: Some(json!(0)),
+                items: None,
+                enum_values: None,
+            },
+        );
 
         ListFilesTool {
             definition: ToolDefinition {
                 name: "list_files".to_string(),
-                description: "List files and directories. Can list recursively and filter by pattern. The path must be within the allowed workspace directory.".to_string(),
+                description: format!(
+                    "List files and directories with pagination. Returns up to {} entries by default. \
+                     Use 'offset' parameter with 'next_offset' from response to page through large directories. \
+                     Can list recursively and filter by pattern. The path must be within the allowed workspace directory.",
+                    DEFAULT_LIMIT
+                ),
                 input_schema: ToolInputSchema {
                     schema_type: "object".to_string(),
                     properties,
@@ -103,6 +138,8 @@ struct ListFilesParams {
     max_depth: Option<usize>,
     include_hidden: Option<bool>,
     pattern: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -136,6 +173,8 @@ impl Tool for ListFilesTool {
         let max_depth = params.max_depth.unwrap_or(3);
         let include_hidden = params.include_hidden.unwrap_or(false);
         let pattern = params.pattern;
+        let limit = params.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+        let offset = params.offset.unwrap_or(0);
 
         // Get workspace directory from context or use current directory
         let workspace = context
@@ -253,15 +292,6 @@ impl Tool for ListFilesTool {
             }
         }
 
-        // Format output
-        if entries.is_empty() {
-            return ToolResult::success("Directory is empty or no files match the pattern.")
-                .with_metadata(json!({
-                    "path": path,
-                    "total_entries": 0
-                }));
-        }
-
         // Add intrinsic files when listing root directory
         let is_root = path == "." || path == "/" || path.is_empty();
         if is_root {
@@ -287,20 +317,48 @@ impl Tool for ListFilesTool {
             }
         });
 
-        let mut dirs_count = 0;
-        let mut files_count = 0;
-        let mut total_size = 0u64;
+        // Calculate total counts before pagination
+        let total_entries = entries.len();
+        let total_dirs: usize = entries.iter().filter(|e| e.is_dir).count();
+        let total_files = total_entries - total_dirs;
+        let grand_total_size: u64 = entries.iter().filter(|e| !e.is_dir).map(|e| e.size).sum();
 
-        let formatted: Vec<String> = entries
+        // Apply pagination
+        let paginated_entries: Vec<&FileEntry> = entries.iter().skip(offset).take(limit).collect();
+        let has_more = offset + paginated_entries.len() < total_entries;
+        let next_offset = if has_more { Some(offset + paginated_entries.len()) } else { None };
+
+        // Format output
+        if paginated_entries.is_empty() {
+            let message = if offset > 0 {
+                format!("No more entries. Total: {} entries ({} dirs, {} files)", total_entries, total_dirs, total_files)
+            } else {
+                "Directory is empty or no files match the pattern.".to_string()
+            };
+            return ToolResult::success(message)
+                .with_metadata(json!({
+                    "path": path,
+                    "total_entries": total_entries,
+                    "showing": 0,
+                    "offset": offset,
+                    "has_more": false
+                }));
+        }
+
+        let mut page_dirs = 0;
+        let mut page_files = 0;
+        let mut page_size = 0u64;
+
+        let formatted: Vec<String> = paginated_entries
             .iter()
             .map(|e| {
                 let indent = "  ".repeat(e.depth);
                 let type_indicator = if e.is_dir {
-                    dirs_count += 1;
+                    page_dirs += 1;
                     "📁"
                 } else {
-                    files_count += 1;
-                    total_size += e.size;
+                    page_files += 1;
+                    page_size += e.size;
                     "📄"
                 };
                 let size_str = if e.is_dir {
@@ -312,20 +370,56 @@ impl Tool for ListFilesTool {
             })
             .collect();
 
-        let output = format!(
-            "{}\n\n📊 {} directories, {} files ({})",
-            formatted.join("\n"),
-            dirs_count,
-            files_count,
-            format_size(total_size)
-        );
+        // Build pagination info string
+        let pagination_info = if has_more {
+            format!(
+                "\n\n📄 Showing {}-{} of {} total ({} dirs, {} files, {})\n⏩ More entries available. Use offset={} to see next page.",
+                offset + 1,
+                offset + paginated_entries.len(),
+                total_entries,
+                total_dirs,
+                total_files,
+                format_size(grand_total_size),
+                next_offset.unwrap()
+            )
+        } else if offset > 0 {
+            format!(
+                "\n\n📄 Showing {}-{} of {} total ({} dirs, {} files, {})\n✅ End of listing.",
+                offset + 1,
+                offset + paginated_entries.len(),
+                total_entries,
+                total_dirs,
+                total_files,
+                format_size(grand_total_size)
+            )
+        } else {
+            format!(
+                "\n\n📊 {} directories, {} files ({})",
+                total_dirs,
+                total_files,
+                format_size(grand_total_size)
+            )
+        };
+
+        let mut output = format!("{}{}", formatted.join("\n"), pagination_info);
+
+        // Truncate if output is too large to prevent context bloat
+        if output.len() > MAX_OUTPUT_SIZE {
+            output.truncate(MAX_OUTPUT_SIZE);
+            output.push_str("\n\n⚠️ [Output truncated - use pagination or filter with pattern]");
+        }
 
         ToolResult::success(output).with_metadata(json!({
             "path": path,
-            "total_entries": entries.len(),
-            "directories": dirs_count,
-            "files": files_count,
-            "total_size": total_size
+            "total_entries": total_entries,
+            "total_directories": total_dirs,
+            "total_files": total_files,
+            "total_size": grand_total_size,
+            "showing": paginated_entries.len(),
+            "offset": offset,
+            "limit": limit,
+            "has_more": has_more,
+            "next_offset": next_offset
         }))
     }
 }

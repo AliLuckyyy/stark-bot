@@ -614,8 +614,8 @@ impl Tool for ExecTool {
             };
         }
 
-        // Truncate if too long
-        const MAX_OUTPUT: usize = 50000;
+        // Truncate if too long (keep small to avoid context bloat for smaller models)
+        const MAX_OUTPUT: usize = 15000;
         if result_text.len() > MAX_OUTPUT {
             result_text = format!(
                 "{}\n\n[Output truncated at {} characters]",

@@ -1310,12 +1310,39 @@ impl MessageDispatcher {
             ).await {
                 Ok(response) => response,
                 Err(e) => {
+                    // Check if this is a client error (4xx) that might be recoverable
+                    if e.is_client_error() && iterations <= 2 {
+                        if e.is_context_too_large() {
+                            log::warn!(
+                                "[ORCHESTRATED_LOOP] Context too large error ({}), clearing tool history ({} entries) and retrying",
+                                e.status_code.unwrap_or(0),
+                                tool_history.len()
+                            );
+                            let recovery_entry = crate::ai::types::handle_context_overflow(
+                                &mut tool_history,
+                                &iterations.to_string(),
+                            );
+                            tool_history.push(recovery_entry);
+                            continue;
+                        }
+
+                        // Other client errors - add guidance but don't clear history
+                        log::warn!(
+                            "[ORCHESTRATED_LOOP] Client error ({}), feeding back to AI: {}",
+                            e.status_code.unwrap_or(0),
+                            e
+                        );
+                        tool_history.push(crate::ai::types::create_error_feedback(&e, &iterations.to_string()));
+                        continue;
+                    }
+
                     // AI generation failed - save summary of work done so far
+                    let error_str = e.to_string();
                     if !tool_call_log.is_empty() {
                         let summary = format!(
                             "[Session interrupted by error. Work completed before failure:]\n{}\n\nError: {}",
                             tool_call_log.join("\n"),
-                            e
+                            error_str
                         );
                         log::info!("[ORCHESTRATED_LOOP] Saving error summary with {} tool calls", tool_call_log.len());
                         let _ = self.db.add_session_message(
@@ -1330,7 +1357,7 @@ impl MessageDispatcher {
                     }
                     // Save context before returning error
                     let _ = self.db.save_agent_context(session_id, orchestrator.context());
-                    return Err(e);
+                    return Err(error_str);
                 }
             };
 
@@ -2726,7 +2753,7 @@ impl MessageDispatcher {
         tool_history: Vec<ToolHistoryEntry>,
         tools: Vec<ToolDefinition>,
         channel_id: i64,
-    ) -> Result<AiResponse, String> {
+    ) -> Result<AiResponse, crate::ai::AiError> {
         let broadcaster = self.broadcaster.clone();
         let mut elapsed_secs = 0u64;
 
@@ -2790,7 +2817,7 @@ impl MessageDispatcher {
                         self.execution_tracker.complete_task(task_id);
                     }
 
-                    return Err("Execution cancelled by user".to_string());
+                    return Err(crate::ai::AiError::new("Execution cancelled by user"));
                 }
                 result = &mut ai_future => {
                     // Complete the thinking task
@@ -2818,9 +2845,10 @@ impl MessageDispatcher {
                             return Ok(response);
                         }
                         Err(e) => {
+                            let error_msg = e.to_string();
                             // Check if it's a timeout error
-                            if e.contains("timed out") || e.contains("timeout") {
-                                log::error!("[AI_PROGRESS] Request timed out after {}s: {}", elapsed_secs, e);
+                            if error_msg.contains("timed out") || error_msg.contains("timeout") {
+                                log::error!("[AI_PROGRESS] Request timed out after {}s: {}", elapsed_secs, error_msg);
                                 broadcaster.broadcast(GatewayEvent::agent_error(
                                     channel_id,
                                     &format!("AI request timed out after {} seconds. The AI service may be overloaded. Please try again.", elapsed_secs + AI_PROGRESS_INTERVAL_SECS),
