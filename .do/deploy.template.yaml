@@ -2,6 +2,10 @@ spec:
   name: starkbot
   services:
     - name: web
+      github:
+        repo: ethereumdegen/stark-bot
+        branch: master
+        deploy_on_push: true
       dockerfile_path: Dockerfile
       http_port: 8080
       instance_size_slug: basic-xxs
